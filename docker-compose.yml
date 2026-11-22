@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ripple
+      POSTGRES_PASSWORD: ripple_dev_password
+      POSTGRES_DB: ripple
+    volumes:
+      - ripple_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ripple"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ripple:
+    build: .
+    ports:
+      - "8787:8787"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 8787
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8787}
+      DATABASE_URL: postgres://ripple:ripple_dev_password@postgres:5432/ripple
+      RIPPLE_HUMAN_TOKEN: ${RIPPLE_HUMAN_TOKEN:-rpl_human_dev_token}
+      RIPPLE_AGY_TOKEN: ${RIPPLE_AGY_TOKEN:-rpl_agy_dev_token}
+      RIPPLE_OPENCLAW_TOKEN: ${RIPPLE_OPENCLAW_TOKEN:-rpl_openclaw_dev_token}
+      RIPPLE_GROK_TOKEN: ${RIPPLE_GROK_TOKEN:-rpl_grok_dev_token}
+      RIPPLE_MUSE_TOKEN: ${RIPPLE_MUSE_TOKEN:-rpl_muse_dev_token}
+
+volumes:
+  ripple_pgdata:

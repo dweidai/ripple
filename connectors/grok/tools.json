@@ -1,0 +1,133 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_list_items",
+      "description": "List backlog items, active runs, and open decision cards in Ripple.",
+      "parameters": { "type": "object", "properties": {}, "required": [] }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_claim",
+      "description": "Claim an open backlog item to start a Run. Returns run id and epoch=1.",
+      "parameters": {
+        "type": "object",
+        "properties": { "item_id": { "type": "string" } },
+        "required": ["item_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_plan",
+      "description": "Post or update the ordered step plan for a Run (bumps planVersion).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "epoch": { "type": "integer" },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "kind": { "type": "string", "enum": ["task", "gate"] }
+              },
+              "required": ["title"]
+            }
+          },
+          "touches": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["run_id", "epoch", "steps"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_step",
+      "description": "Update a step status (active/done/failed/skipped) and optional note.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "epoch": { "type": "integer" },
+          "idx": { "type": "integer" },
+          "status": { "type": "string", "enum": ["pending", "active", "done", "failed", "skipped"] },
+          "note": { "type": "string" }
+        },
+        "required": ["run_id", "epoch", "idx", "status"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_checkpoint",
+      "description": "Report a safe checkpoint and receive any queued human steers and overlap warnings.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "epoch": { "type": "integer" },
+          "after_step": { "type": "integer" }
+        },
+        "required": ["run_id", "epoch", "after_step"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_ack",
+      "description": "Acknowledge a delivered human steer.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "steer_id": { "type": "string" },
+          "accepted": { "type": "boolean" },
+          "note": { "type": "string" }
+        },
+        "required": ["steer_id", "accepted"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_ask",
+      "description": "Raise a pin-bound decision Card (approve/choose/provide/review) for a human.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "epoch": { "type": "integer" },
+          "type": { "type": "string", "enum": ["approve", "choose", "provide", "review"] },
+          "prompt": { "type": "string" },
+          "options": { "type": "array", "items": { "type": "string" } },
+          "diff_preview": { "type": "string" }
+        },
+        "required": ["run_id", "epoch", "type", "prompt"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_await",
+      "description": "Wait for a Card to be answered, staled, expired, or withdrawn.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "card_id": { "type": "string" },
+          "timeout_ms": { "type": "integer" }
+        },
+        "required": ["card_id"]
+      }
+    }
+  }
+]

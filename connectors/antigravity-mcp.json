@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "ripple": {
+      "url": "https://ripple.yourdomain.com/mcp",
+      "headers": {
+        "Authorization": "Bearer rpl_agy_change_me"
+      }
+    }
+  }
+}
