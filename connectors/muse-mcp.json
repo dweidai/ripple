@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "ripple": {
+      "url": "https://cab-together-muscle-karaoke.trycloudflare.com/mcp",
+      "headers": {
+        "Authorization": "Bearer rpl_muse_dev_token"
+      }
+    }
+  }
+}

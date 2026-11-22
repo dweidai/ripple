@@ -13,6 +13,7 @@ import type {
 
 export interface TokenRecord extends Principal {
   tokenHash: string;
+  rawToken?: string;
   revokedAt?: string;
 }
 
@@ -26,8 +27,12 @@ export interface Store {
   ensureWorkspace(id: string, name: string): Promise<void>;
   saveToken(record: TokenRecord): Promise<void>;
   getTokenByHash(hash: string): Promise<TokenRecord | undefined>;
+  getTokenByActor(wsId: string, actorId: string): Promise<TokenRecord | undefined>;
+  updateTokenByActor(wsId: string, actorId: string, patch: Partial<TokenRecord>): Promise<TokenRecord | undefined>;
   listTokens(wsId: string): Promise<TokenRecord[]>;
   revokeToken(hash: string): Promise<void>;
+  revokeTokensByActor(wsId: string, actorId: string): Promise<void>;
+
 
   // Items
   createItem(item: Item): Promise<Item>;

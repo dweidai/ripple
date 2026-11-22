@@ -66,16 +66,52 @@ export class PostgresStore implements Store {
 
   async saveToken(r: TokenRecord): Promise<void> {
     await this.pool.query(
-      `INSERT INTO tokens (token_hash, ws_id, actor_id, actor_name, kind, sponsor_human, roles)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
-       ON CONFLICT (token_hash) DO UPDATE SET actor_name = EXCLUDED.actor_name, roles = EXCLUDED.roles`,
-      [r.tokenHash, r.wsId, r.actorId, r.actorName, r.kind, r.sponsorHuman ?? null, r.roles],
+      `INSERT INTO tokens (token_hash, ws_id, actor_id, actor_name, kind, sponsor_human, parent_agent_id, roles, avatar_color, bio, capabilities, last_seen_at, status_text, online, raw_token)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       ON CONFLICT (token_hash) DO UPDATE SET actor_name = EXCLUDED.actor_name, roles = EXCLUDED.roles, avatar_color = EXCLUDED.avatar_color, bio = EXCLUDED.bio, capabilities = EXCLUDED.capabilities, last_seen_at = EXCLUDED.last_seen_at, status_text = EXCLUDED.status_text, online = EXCLUDED.online`,
+      [
+        r.tokenHash,
+        r.wsId,
+        r.actorId,
+        r.actorName,
+        r.kind,
+        r.sponsorHuman ?? null,
+        r.parentAgentId ?? null,
+        r.roles,
+        r.avatarColor ?? null,
+        r.bio ?? null,
+        r.capabilities ?? [],
+        r.lastSeenAt ?? new Date().toISOString(),
+        r.statusText ?? null,
+        r.online ?? true,
+        r.rawToken ?? null,
+      ],
     );
   }
 
   async getTokenByHash(hash: string): Promise<TokenRecord | undefined> {
     const { rows } = await this.pool.query('SELECT * FROM tokens WHERE token_hash = $1', [hash]);
     return rows[0] ? mapToken(rows[0]) : undefined;
+  }
+
+  async getTokenByActor(wsId: string, actorId: string): Promise<TokenRecord | undefined> {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM tokens WHERE ws_id = $1 AND actor_id = $2 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1',
+      [wsId, actorId],
+    );
+    return rows[0] ? mapToken(rows[0]) : undefined;
+  }
+
+  async updateTokenByActor(
+    wsId: string,
+    actorId: string,
+    patch: Partial<TokenRecord>,
+  ): Promise<TokenRecord | undefined> {
+    const existing = await this.getTokenByActor(wsId, actorId);
+    if (!existing) return undefined;
+    const merged: TokenRecord = { ...existing, ...patch };
+    await this.saveToken(merged);
+    return merged;
   }
 
   async listTokens(wsId: string): Promise<TokenRecord[]> {
@@ -90,11 +126,34 @@ export class PostgresStore implements Store {
     await this.pool.query('UPDATE tokens SET revoked_at = NOW() WHERE token_hash = $1', [hash]);
   }
 
+  async revokeTokensByActor(wsId: string, actorId: string): Promise<void> {
+    await this.pool.query(
+      'UPDATE tokens SET revoked_at = NOW() WHERE ws_id = $1 AND actor_id = $2 AND revoked_at IS NULL',
+      [wsId, actorId],
+    );
+  }
+
   async createItem(i: Item): Promise<Item> {
     await this.pool.query(
-      `INSERT INTO items (id, ws_id, title, body, priority, version, status, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [i.id, i.wsId, i.title, i.body, i.priority, i.version, i.status, i.createdAt, i.updatedAt],
+      `INSERT INTO items (id, ws_id, title, body, priority, version, status, created_by, assignee_id, parent_item_id, tags, linked_run_id, result_url, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [
+        i.id,
+        i.wsId,
+        i.title,
+        i.body,
+        i.priority,
+        i.version,
+        i.status,
+        i.createdBy,
+        i.assigneeId ?? null,
+        i.parentItemId ?? null,
+        i.tags ?? [],
+        i.linkedRunId ?? null,
+        i.resultUrl ?? null,
+        i.createdAt,
+        i.updatedAt,
+      ],
     );
     return i;
   }
@@ -114,16 +173,29 @@ export class PostgresStore implements Store {
 
   async updateItem(i: Item): Promise<Item> {
     await this.pool.query(
-      `UPDATE items SET title=$2, body=$3, priority=$4, version=$5, status=$6, updated_at=$7 WHERE id=$1`,
-      [i.id, i.title, i.body, i.priority, i.version, i.status, i.updatedAt],
+      `UPDATE items SET title=$2, body=$3, priority=$4, version=$5, status=$6, assignee_id=$7, parent_item_id=$8, tags=$9, linked_run_id=$10, result_url=$11, updated_at=$12 WHERE id=$1`,
+      [
+        i.id,
+        i.title,
+        i.body,
+        i.priority,
+        i.version,
+        i.status,
+        i.assigneeId ?? null,
+        i.parentItemId ?? null,
+        i.tags ?? [],
+        i.linkedRunId ?? null,
+        i.resultUrl ?? null,
+        i.updatedAt,
+      ],
     );
     return i;
   }
 
   async createRun(r: Run): Promise<Run> {
     await this.pool.query(
-      `INSERT INTO runs (id, ws_id, item_id, flow_template_id, owner_agent, sponsor_human, epoch, plan_version, status, heartbeat_at, last_checkpoint_step, touches, subject_pin_kind, subject_pin_value, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+      `INSERT INTO runs (id, ws_id, item_id, flow_template_id, owner_agent, sponsor_human, parent_run_id, parent_step_idx, title, goal, report_summary, report_data, depth, epoch, plan_version, status, heartbeat_at, last_checkpoint_step, touches, subject_pin_kind, subject_pin_value, created_at, updated_at, ended_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
       [
         r.id,
         r.wsId,
@@ -131,6 +203,13 @@ export class PostgresStore implements Store {
         r.flowTemplateId ?? null,
         r.ownerAgent,
         r.sponsorHuman,
+        r.parentRunId ?? null,
+        r.parentStepIdx ?? null,
+        r.title ?? null,
+        r.goal ?? null,
+        r.reportSummary ?? null,
+        r.reportData ? JSON.stringify(r.reportData) : null,
+        r.depth ?? 0,
         r.epoch,
         r.planVersion,
         r.status,
@@ -141,6 +220,7 @@ export class PostgresStore implements Store {
         r.subjectPin?.value ?? null,
         r.createdAt,
         r.updatedAt,
+        r.endedAt ?? null,
       ],
     );
     return r;
@@ -161,7 +241,7 @@ export class PostgresStore implements Store {
 
   async findActiveRunByItem(itemId: string): Promise<Run | undefined> {
     const { rows } = await this.pool.query(
-      `SELECT * FROM runs WHERE item_id = $1 AND status NOT IN ('done','cancelled','overridden') LIMIT 1`,
+      `SELECT * FROM runs WHERE item_id = $1 AND parent_run_id IS NULL AND status NOT IN ('done','failed','cancelled','overridden') LIMIT 1`,
       [itemId],
     );
     return rows[0] ? mapRun(rows[0]) : undefined;
@@ -170,7 +250,8 @@ export class PostgresStore implements Store {
   async updateRun(r: Run): Promise<Run> {
     await this.pool.query(
       `UPDATE runs SET epoch=$2, plan_version=$3, status=$4, heartbeat_at=$5, last_checkpoint_step=$6,
-       touches=$7, subject_pin_kind=$8, subject_pin_value=$9, updated_at=$10 WHERE id=$1`,
+       touches=$7, subject_pin_kind=$8, subject_pin_value=$9, updated_at=$10, ended_at=$11,
+       report_summary=$12, report_data=$13, title=$14, goal=$15 WHERE id=$1`,
       [
         r.id,
         r.epoch,
@@ -182,6 +263,11 @@ export class PostgresStore implements Store {
         r.subjectPin?.kind ?? null,
         r.subjectPin?.value ?? null,
         r.updatedAt,
+        r.endedAt ?? null,
+        r.reportSummary ?? null,
+        r.reportData ? JSON.stringify(r.reportData) : null,
+        r.title ?? null,
+        r.goal ?? null,
       ],
     );
     return r;
@@ -289,9 +375,20 @@ export class PostgresStore implements Store {
 
   async createArtifact(a: Artifact): Promise<Artifact> {
     await this.pool.query(
-      `INSERT INTO artifacts (id, run_id, step_idx, kind, ref, label, content_hash, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [a.id, a.runId, a.stepIdx, a.kind, a.ref, a.label, a.contentHash, a.createdAt],
+      `INSERT INTO artifacts (id, run_id, step_idx, kind, ref, label, url, meta, content_hash, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        a.id,
+        a.runId,
+        a.stepIdx,
+        a.kind,
+        a.ref,
+        a.label,
+        a.url ?? null,
+        a.meta ? JSON.stringify(a.meta) : null,
+        a.contentHash,
+        a.createdAt,
+      ],
     );
     return a;
   }
@@ -420,9 +517,25 @@ export class PostgresStore implements Store {
 
   async createThreadMessage(m: ThreadMessage): Promise<ThreadMessage> {
     await this.pool.query(
-      `INSERT INTO thread_messages (id, ws_id, scope_kind, scope_id, author, author_kind, body, steer_id, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [m.id, m.wsId, m.scopeKind, m.scopeId, m.author, m.authorKind, m.body, m.steerId ?? null, m.createdAt],
+      `INSERT INTO thread_messages (id, ws_id, scope_kind, scope_id, actor_id, author, author_kind, body, mentions, reply_to_id, run_id, item_id, hop_count, steer_id, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [
+        m.id,
+        m.wsId,
+        m.scopeKind,
+        m.scopeId,
+        m.actorId,
+        m.author,
+        m.authorKind,
+        m.body,
+        m.mentions ?? [],
+        m.replyToId ?? null,
+        m.runId ?? null,
+        m.itemId ?? null,
+        m.hopCount ?? 0,
+        m.steerId ?? null,
+        m.createdAt,
+      ],
     );
     return m;
   }
@@ -483,12 +596,20 @@ export class PostgresStore implements Store {
 function mapToken(r: Record<string, any>): TokenRecord {
   return {
     tokenHash: r.token_hash,
+    rawToken: r.raw_token ?? undefined,
     wsId: r.ws_id,
     actorId: r.actor_id,
     actorName: r.actor_name,
     kind: r.kind,
     sponsorHuman: r.sponsor_human ?? undefined,
+    parentAgentId: r.parent_agent_id ?? undefined,
     roles: r.roles ?? [],
+    avatarColor: r.avatar_color ?? undefined,
+    bio: r.bio ?? undefined,
+    capabilities: r.capabilities ?? [],
+    lastSeenAt: r.last_seen_at ? new Date(r.last_seen_at).toISOString() : undefined,
+    statusText: r.status_text ?? undefined,
+    online: r.online ?? true,
     revokedAt: r.revoked_at ? new Date(r.revoked_at).toISOString() : undefined,
   };
 }
@@ -501,6 +622,12 @@ function mapItem(r: Record<string, any>): Item {
     priority: r.priority,
     version: r.version,
     status: r.status,
+    createdBy: r.created_by ?? 'you',
+    assigneeId: r.assignee_id ?? undefined,
+    parentItemId: r.parent_item_id ?? undefined,
+    tags: r.tags ?? [],
+    linkedRunId: r.linked_run_id ?? undefined,
+    resultUrl: r.result_url ?? undefined,
     createdAt: new Date(r.created_at).toISOString(),
     updatedAt: new Date(r.updated_at).toISOString(),
   };
@@ -513,6 +640,13 @@ function mapRun(r: Record<string, any>): Run {
     flowTemplateId: r.flow_template_id ?? undefined,
     ownerAgent: r.owner_agent,
     sponsorHuman: r.sponsor_human,
+    parentRunId: r.parent_run_id ?? undefined,
+    parentStepIdx: r.parent_step_idx ?? undefined,
+    title: r.title ?? undefined,
+    goal: r.goal ?? undefined,
+    reportSummary: r.report_summary ?? undefined,
+    reportData: r.report_data ?? undefined,
+    depth: r.depth ?? 0,
     epoch: r.epoch,
     planVersion: r.plan_version,
     status: r.status,
@@ -522,6 +656,7 @@ function mapRun(r: Record<string, any>): Run {
     subjectPin: r.subject_pin_kind ? { kind: r.subject_pin_kind, value: r.subject_pin_value } : undefined,
     createdAt: new Date(r.created_at).toISOString(),
     updatedAt: new Date(r.updated_at).toISOString(),
+    endedAt: r.ended_at ? new Date(r.ended_at).toISOString() : undefined,
   };
 }
 function mapStep(r: Record<string, any>): Step {
@@ -561,6 +696,8 @@ function mapArtifact(r: Record<string, any>): Artifact {
     kind: r.kind,
     ref: r.ref,
     label: r.label,
+    url: r.url ?? undefined,
+    meta: r.meta ?? undefined,
     contentHash: r.content_hash,
     createdAt: new Date(r.created_at).toISOString(),
   };
@@ -613,9 +750,15 @@ function mapThread(r: Record<string, any>): ThreadMessage {
     wsId: r.ws_id,
     scopeKind: r.scope_kind,
     scopeId: r.scope_id,
+    actorId: r.actor_id ?? r.author,
     author: r.author,
     authorKind: r.author_kind,
     body: r.body,
+    mentions: r.mentions ?? [],
+    replyToId: r.reply_to_id ?? undefined,
+    runId: r.run_id ?? undefined,
+    itemId: r.item_id ?? undefined,
+    hopCount: r.hop_count ?? 0,
     steerId: r.steer_id ?? undefined,
     createdAt: new Date(r.created_at).toISOString(),
   };
@@ -633,3 +776,4 @@ function mapEvent(r: Record<string, any>): RippleEvent {
     at: new Date(r.at).toISOString(),
   };
 }
+

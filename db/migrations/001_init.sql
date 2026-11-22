@@ -14,7 +14,15 @@ CREATE TABLE IF NOT EXISTS tokens (
   actor_name TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('human', 'agent')),
   sponsor_human TEXT,
+  parent_agent_id TEXT,
   roles TEXT[] NOT NULL DEFAULT '{}',
+  avatar_color TEXT,
+  bio TEXT,
+  capabilities TEXT[] NOT NULL DEFAULT '{}',
+  last_seen_at TIMESTAMPTZ,
+  status_text TEXT,
+  online BOOLEAN NOT NULL DEFAULT TRUE,
+  raw_token TEXT,
   revoked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -27,6 +35,12 @@ CREATE TABLE IF NOT EXISTS items (
   priority TEXT NOT NULL DEFAULT 'P1',
   version INT NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'active', 'done', 'dropped')),
+  created_by TEXT NOT NULL DEFAULT 'you',
+  assignee_id TEXT,
+  parent_item_id TEXT,
+  tags TEXT[] NOT NULL DEFAULT '{}',
+  linked_run_id TEXT,
+  result_url TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -52,22 +66,30 @@ CREATE TABLE IF NOT EXISTS runs (
   flow_template_id TEXT REFERENCES flow_templates(id) ON DELETE SET NULL,
   owner_agent TEXT NOT NULL,
   sponsor_human TEXT NOT NULL,
+  parent_run_id TEXT,
+  parent_step_idx INT,
+  title TEXT,
+  goal TEXT,
+  report_summary TEXT,
+  report_data JSONB,
+  depth INT NOT NULL DEFAULT 0,
   epoch INT NOT NULL DEFAULT 1,
   plan_version INT NOT NULL DEFAULT 0,
-  status TEXT NOT NULL CHECK (status IN ('claimed', 'planning', 'running', 'checkpoint', 'gated', 'stalled', 'overridden', 'cancelled', 'done')),
+  status TEXT NOT NULL CHECK (status IN ('claimed', 'planning', 'running', 'checkpoint', 'gated', 'stalled', 'overridden', 'cancelled', 'failed', 'done')),
   heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_checkpoint_step INT NOT NULL DEFAULT 0,
   touches TEXT[] NOT NULL DEFAULT '{}',
   subject_pin_kind TEXT,
   subject_pin_value TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ended_at TIMESTAMPTZ
 );
 
--- At most one non-terminal run per backlog item (single-writer claim mutex)
+-- At most one non-terminal primary run per backlog item (single-writer claim mutex)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_active_item
   ON runs (item_id)
-  WHERE item_id IS NOT NULL AND status NOT IN ('done', 'cancelled', 'overridden');
+  WHERE item_id IS NOT NULL AND parent_run_id IS NULL AND status NOT IN ('done', 'failed', 'cancelled', 'overridden');
 
 CREATE TABLE IF NOT EXISTS steps (
   id TEXT PRIMARY KEY,
@@ -101,9 +123,11 @@ CREATE TABLE IF NOT EXISTS artifacts (
   id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
   step_idx INT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('commit', 'pr', 'file', 'url')),
+  kind TEXT NOT NULL CHECK (kind IN ('commit', 'pr', 'file', 'url', 'drive', 'gdoc')),
   ref TEXT NOT NULL,
   label TEXT NOT NULL DEFAULT '',
+  url TEXT,
+  meta JSONB,
   content_hash TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -141,9 +165,15 @@ CREATE TABLE IF NOT EXISTS thread_messages (
   ws_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   scope_kind TEXT NOT NULL CHECK (scope_kind IN ('workspace', 'run', 'step', 'card')),
   scope_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL DEFAULT 'you',
   author TEXT NOT NULL,
   author_kind TEXT NOT NULL CHECK (author_kind IN ('human', 'agent')),
   body TEXT NOT NULL,
+  mentions TEXT[] NOT NULL DEFAULT '{}',
+  reply_to_id TEXT,
+  run_id TEXT,
+  item_id TEXT,
+  hop_count INT NOT NULL DEFAULT 0,
   steer_id TEXT REFERENCES steers(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -168,3 +198,4 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   response JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+

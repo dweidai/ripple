@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "ripple": {
-      "url": "https://ripple.yourdomain.com/mcp",
+      "url": "https://cab-together-muscle-karaoke.trycloudflare.com/mcp",
       "headers": {
-        "Authorization": "Bearer rpl_agy_change_me"
+        "Authorization": "Bearer rpl_agy_dev_token"
       }
     }
   }

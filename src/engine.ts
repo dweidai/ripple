@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { generateToken, hashToken, recordToPrincipal } from './auth.js';
 import { Errors } from './errors.js';
 import type { Store } from './store/interface.js';
 import {
@@ -13,6 +14,7 @@ import {
   type FlowTemplate,
   type HeartbeatResponse,
   type Item,
+  type ItemStatus,
   type OverlapWarning,
   type Pin,
   type Principal,
@@ -23,11 +25,18 @@ import {
   type Step,
   type StepKind,
   type StepStatus,
+  type SubrunTreeNode,
   type ThreadMessage,
+  type WorkspaceContext,
 } from './types.js';
 
 function uid(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(5).toString('hex')}`;
+}
+
+export function extractMentions(body: string): string[] {
+  const matches = body.match(/@([a-zA-Z0-9_-]+)/g) ?? [];
+  return [...new Set(matches.map((m) => m.slice(1).toLowerCase()))];
 }
 
 export class RippleEngine {
@@ -68,25 +77,128 @@ export class RippleEngine {
     }
   }
 
-  // ---------- Items ----------
+  // ---------- Profile & Identity ----------
+  async updateProfile(
+    p: Principal,
+    patch: { actorName?: string; statusText?: string; bio?: string; avatarColor?: string },
+  ): Promise<Principal> {
+    const now = new Date().toISOString();
+    const updated = await this.store.updateTokenByActor(p.wsId, p.actorId, {
+      ...(patch.actorName !== undefined ? { actorName: patch.actorName.trim() || p.actorName } : {}),
+      ...(patch.statusText !== undefined ? { statusText: patch.statusText } : {}),
+      ...(patch.bio !== undefined ? { bio: patch.bio } : {}),
+      ...(patch.avatarColor !== undefined ? { avatarColor: patch.avatarColor } : {}),
+      lastSeenAt: now,
+      online: true,
+    });
+    const result: Principal = updated
+      ? recordToPrincipal(updated)
+      : {
+          ...p,
+          ...(patch.actorName ? { actorName: patch.actorName } : {}),
+          ...(patch.statusText !== undefined ? { statusText: patch.statusText } : {}),
+          ...(patch.bio !== undefined ? { bio: patch.bio } : {}),
+          ...(patch.avatarColor !== undefined ? { avatarColor: patch.avatarColor } : {}),
+          lastSeenAt: now,
+          online: true,
+        };
+    await this.emit(p.wsId, 'principal', p.actorId, 'principal.updated', p.actorId, {
+      actorName: result.actorName,
+      statusText: result.statusText,
+    });
+    return result;
+  }
+
+  // ---------- Items (Backlog & Tasks) ----------
   async createItem(
     p: Principal,
-    input: { title: string; body?: string; priority?: string },
+    input: {
+      title: string;
+      body?: string;
+      priority?: string | number;
+      assigneeId?: string;
+      parentItemId?: string;
+      tags?: string[];
+      createdBy?: string;
+    },
   ): Promise<Item> {
+    if (!input.title || !String(input.title).trim()) {
+      throw Errors.badRequest('Item title is required');
+    }
     const now = new Date().toISOString();
+    const rawPriority = input.priority ?? 'P1';
+    const priority = typeof rawPriority === 'number' ? `P${rawPriority}` : String(rawPriority);
     const item: Item = {
       id: uid('item'),
       wsId: p.wsId,
-      title: input.title,
+      title: String(input.title).trim(),
       body: input.body ?? '',
-      priority: input.priority ?? 'P1',
+      priority,
       version: 1,
       status: 'open',
+      createdBy: input.createdBy ?? p.actorId,
+      assigneeId: input.assigneeId || undefined,
+      parentItemId: input.parentItemId || undefined,
+      tags: Array.isArray(input.tags) ? [...new Set(input.tags.map((t) => String(t).trim()).filter(Boolean))] : [],
       createdAt: now,
       updatedAt: now,
     };
     await this.store.createItem(item);
-    await this.emit(p.wsId, 'item', item.id, 'item.created', p.actorId, { title: item.title });
+    await this.emit(p.wsId, 'item', item.id, 'item.created', p.actorId, {
+      title: item.title,
+      priority: item.priority,
+      assigneeId: item.assigneeId,
+      parentItemId: item.parentItemId,
+      tags: item.tags,
+      createdBy: item.createdBy,
+    });
+    return item;
+  }
+
+  async updateItem(
+    p: Principal,
+    itemId: string,
+    patch: {
+      title?: string;
+      body?: string;
+      priority?: string | number;
+      status?: ItemStatus;
+      assigneeId?: string;
+      parentItemId?: string;
+      tags?: string[];
+      linkedRunId?: string;
+      resultUrl?: string;
+    },
+  ): Promise<Item> {
+    const item = await this.store.getItem(itemId);
+    if (!item || item.wsId !== p.wsId) throw Errors.notFound('Item', itemId);
+
+    const now = new Date().toISOString();
+    if (patch.title !== undefined) item.title = String(patch.title).trim() || item.title;
+    if (patch.body !== undefined) item.body = patch.body;
+    if (patch.priority !== undefined) {
+      item.priority = typeof patch.priority === 'number' ? `P${patch.priority}` : String(patch.priority);
+    }
+    if (patch.status !== undefined) item.status = patch.status;
+    if (patch.assigneeId !== undefined) item.assigneeId = patch.assigneeId || undefined;
+    if (patch.parentItemId !== undefined) item.parentItemId = patch.parentItemId || undefined;
+    if (patch.tags !== undefined) {
+      item.tags = [...new Set(patch.tags.map((t) => String(t).trim()).filter(Boolean))];
+    }
+    if (patch.linkedRunId !== undefined) item.linkedRunId = patch.linkedRunId || undefined;
+    if (patch.resultUrl !== undefined) item.resultUrl = patch.resultUrl || undefined;
+    item.version += 1;
+    item.updatedAt = now;
+
+    await this.store.updateItem(item);
+    await this.emit(p.wsId, 'item', item.id, 'item.updated', p.actorId, {
+      title: item.title,
+      status: item.status,
+      priority: item.priority,
+      assigneeId: item.assigneeId,
+      version: item.version,
+      resultUrl: item.resultUrl,
+    });
     return item;
   }
 
@@ -103,8 +215,11 @@ export class RippleEngine {
       id: uid('r'),
       wsId: p.wsId,
       itemId: item.id,
+      title: item.title,
+      goal: item.body,
       ownerAgent: p.actorId,
       sponsorHuman: p.sponsorHuman ?? p.actorId,
+      depth: 0,
       epoch: 1,
       planVersion: 0,
       status: 'planning',
@@ -117,9 +232,11 @@ export class RippleEngine {
     };
     await this.store.createRun(run);
     item.status = 'active';
+    item.assigneeId = item.assigneeId ?? p.actorId;
+    item.linkedRunId = run.id;
     item.updatedAt = now;
     await this.store.updateItem(item);
-    await this.emit(p.wsId, 'run', run.id, 'run.claimed', p.actorId, { itemId: item.id }, run.epoch);
+    await this.emit(p.wsId, 'run', run.id, 'run.claimed', p.actorId, { itemId: item.id, title: item.title }, run.epoch);
     return run;
   }
 
@@ -196,6 +313,7 @@ export class RippleEngine {
     const allDone = steps.every((s) => (s.idx === step.idx ? step.status === 'done' : s.status === 'done' || s.status === 'skipped'));
     if (allDone && steps.length > 0) {
       run.status = 'done';
+      run.endedAt = now;
       if (run.itemId) {
         const item = await this.store.getItem(run.itemId);
         if (item) {
@@ -228,6 +346,8 @@ export class RippleEngine {
       kind: ArtifactKind;
       ref: string;
       label?: string;
+      url?: string;
+      meta?: Record<string, unknown>;
       contentHash?: string;
     },
   ): Promise<{ artifact: Artifact; staledCards: Card[]; replacementCards: Card[] }> {
@@ -237,6 +357,9 @@ export class RippleEngine {
 
     const now = new Date().toISOString();
     const hash = input.contentHash ?? input.ref;
+    const inferredUrl =
+      input.url ??
+      (input.ref.startsWith('http://') || input.ref.startsWith('https://') ? input.ref : undefined);
     const artifact: Artifact = {
       id: uid('art'),
       runId: run.id,
@@ -244,10 +367,13 @@ export class RippleEngine {
       kind: input.kind,
       ref: input.ref,
       label: input.label ?? `${input.kind} ${input.ref}`,
+      url: inferredUrl,
+      meta: input.meta,
       contentHash: hash,
       createdAt: now,
     };
     await this.store.createArtifact(artifact);
+
 
     const newPin: Pin = {
       kind: input.kind === 'commit' ? 'commit' : 'artifact',
@@ -775,8 +901,10 @@ export class RippleEngine {
       id: uid('r'),
       wsId: p.wsId,
       flowTemplateId: flow.id,
+      title: flow.name,
       ownerAgent: flow.agentId,
       sponsorHuman: flow.sponsorHuman,
+      depth: 0,
       epoch: 1,
       planVersion: 1,
       status: 'running',
@@ -804,42 +932,480 @@ export class RippleEngine {
     return { run, steps };
   }
 
-  // ---------- Scoped Threads ----------
+  // ---------- Sub-Agents & Hierarchical Runs ----------
+  async spawnSubrun(
+    p: Principal,
+    parentRunId: string,
+    input: {
+      title: string;
+      goal?: string;
+      subagentId?: string;
+      subagentName?: string;
+      itemId?: string;
+      parentStepIdx?: number;
+      steps?: Array<{ title: string; kind?: StepKind; status?: StepStatus; note?: string }>;
+      touches?: string[];
+      capabilities?: string[];
+    },
+  ): Promise<{ run: Run; steps: Step[]; subagent: Principal }> {
+    const parent = await this.store.getRun(parentRunId);
+    if (!parent || parent.wsId !== p.wsId) throw Errors.notFound('Run', parentRunId);
+    if (TERMINAL_RUN_STATUSES.has(parent.status)) {
+      throw Errors.fenced(parent.epoch, parent.epoch);
+    }
+
+    const parentDepth = parent.depth ?? 0;
+    if (parentDepth >= 3) {
+      throw Errors.badRequest('Maximum sub-run depth (3) reached');
+    }
+
+    const subagentId =
+      input.subagentId ||
+      `${parent.ownerAgent}-sub-${crypto.randomBytes(2).toString('hex')}`;
+    const subagentName =
+      input.subagentName ||
+      `${subagentId} (Sub-Agent of ${parent.ownerAgent})`;
+
+    const now = new Date().toISOString();
+    let existingSub = await this.store.getTokenByActor(p.wsId, subagentId);
+    if (!existingSub) {
+      const rawToken = generateToken(subagentId.replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'sub');
+      await this.store.saveToken({
+        tokenHash: hashToken(rawToken),
+        rawToken,
+        wsId: p.wsId,
+        actorId: subagentId,
+        actorName: subagentName,
+        kind: 'agent',
+        sponsorHuman: parent.sponsorHuman,
+        parentAgentId: parent.ownerAgent,
+        roles: ['subagent'],
+        capabilities: input.capabilities ?? ['github', 'gdrive', 'gdocs'],
+        lastSeenAt: now,
+        statusText: `Working on: ${input.title}`,
+        online: true,
+      });
+      existingSub = await this.store.getTokenByActor(p.wsId, subagentId);
+    } else {
+      existingSub =
+        (await this.store.updateTokenByActor(p.wsId, subagentId, {
+          actorName: input.subagentName || existingSub.actorName,
+          parentAgentId: existingSub.parentAgentId ?? parent.ownerAgent,
+          lastSeenAt: now,
+          statusText: `Working on: ${input.title}`,
+          online: true,
+        })) ?? existingSub;
+    }
+
+    const subagent: Principal = existingSub
+      ? recordToPrincipal(existingSub)
+      : {
+          wsId: p.wsId,
+          actorId: subagentId,
+          actorName: subagentName,
+          kind: 'agent',
+          sponsorHuman: parent.sponsorHuman,
+          parentAgentId: parent.ownerAgent,
+          roles: ['subagent'],
+          capabilities: input.capabilities ?? ['github', 'gdrive', 'gdocs'],
+          lastSeenAt: now,
+          statusText: `Working on: ${input.title}`,
+          online: true,
+        };
+
+    const initialStepsInput =
+      input.steps && input.steps.length > 0
+        ? input.steps
+        : [{ title: input.title, kind: 'task' as StepKind }];
+
+    const run: Run = {
+      id: uid('sub'),
+      wsId: p.wsId,
+      itemId: input.itemId ?? parent.itemId,
+      parentRunId: parent.id,
+      parentStepIdx: input.parentStepIdx,
+      title: input.title,
+      goal: input.goal ?? '',
+      depth: parentDepth + 1,
+      ownerAgent: subagent.actorId,
+      sponsorHuman: parent.sponsorHuman,
+      epoch: 1,
+      planVersion: 1,
+      status: 'running',
+      heartbeatAt: now,
+      lastCheckpointStep: 0,
+      touches: input.touches ? [...new Set(input.touches)] : [],
+      subjectPin: { kind: 'plan', value: 'v1' },
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.store.createRun(run);
+
+    if (input.itemId) {
+      const item = await this.store.getItem(input.itemId);
+      if (item && item.wsId === p.wsId) {
+        item.status = 'active';
+        item.assigneeId = item.assigneeId ?? subagent.actorId;
+        item.linkedRunId = run.id;
+        item.updatedAt = now;
+        await this.store.updateItem(item);
+      }
+    }
+
+    const steps: Step[] = initialStepsInput.map((s, i) => ({
+      id: uid('st'),
+      runId: run.id,
+      planVersion: 1,
+      idx: i + 1,
+      title: s.title,
+      kind: s.kind ?? 'task',
+      status: s.status ?? (i === 0 ? 'active' : 'pending'),
+      note: s.note ?? '',
+      startedAt: (s.status ?? (i === 0 ? 'active' : 'pending')) === 'active' ? now : undefined,
+    }));
+    await this.store.replaceSteps(run.id, 1, steps);
+
+    await this.emit(
+      p.wsId,
+      'run',
+      run.id,
+      'run.subrun_spawned',
+      p.actorId,
+      {
+        parentRunId: parent.id,
+        subrunId: run.id,
+        subagentId: subagent.actorId,
+        title: run.title,
+        depth: run.depth,
+      },
+      run.epoch,
+    );
+
+    // Post notice in parent run thread
+    const noticeMsg: ThreadMessage = {
+      id: uid('msg'),
+      wsId: p.wsId,
+      scopeKind: 'run',
+      scopeId: parent.id,
+      actorId: p.actorId,
+      author: p.actorName,
+      authorKind: p.kind,
+      body: `Spawned sub-agent **${subagent.actorName}** (\`@${subagent.actorId}\`) on sub-run \`${run.id}\`: *${run.title}*`,
+      mentions: [subagent.actorId],
+      runId: run.id,
+      itemId: run.itemId,
+      hopCount: 0,
+      createdAt: now,
+    };
+    await this.store.createThreadMessage(noticeMsg);
+
+    return { run, steps, subagent };
+  }
+
+  async reportRun(
+    p: Principal,
+    runId: string,
+    input: {
+      epoch?: number;
+      summary: string;
+      status?: 'done' | 'failed';
+      reportData?: Record<string, unknown>;
+      artifacts?: Array<{
+        kind: ArtifactKind;
+        ref: string;
+        title?: string;
+        label?: string;
+        url?: string;
+        contentHash?: string;
+        meta?: Record<string, unknown>;
+      }>;
+    },
+  ): Promise<{ run: Run; parentMessage?: ThreadMessage; workspaceMessage?: ThreadMessage; artifacts: Artifact[] }> {
+    const run = await this.store.getRun(runId);
+    if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', runId);
+    if (input.epoch !== undefined) {
+      this.assertEpoch(run, input.epoch);
+    }
+
+    const now = new Date().toISOString();
+    const attachedArtifacts: Artifact[] = [];
+    const steps = await this.store.listSteps(run.id, run.planVersion);
+    const lastStepIdx = steps.length > 0 ? steps[steps.length - 1].idx : 1;
+
+    if (input.artifacts && input.artifacts.length > 0) {
+      for (const art of input.artifacts) {
+        const res = await this.addArtifact(p, run.id, {
+          epoch: run.epoch,
+          stepIdx: lastStepIdx,
+          kind: art.kind,
+          ref: art.ref,
+          label: art.title ?? art.label ?? `${art.kind}: ${art.ref}`,
+          url: art.url ?? (art.ref.startsWith('http') ? art.ref : undefined),
+          meta: art.meta,
+          contentHash: art.contentHash ?? art.ref,
+        });
+        attachedArtifacts.push(res.artifact);
+      }
+    }
+
+    const finalStatus = input.status ?? 'done';
+    for (const s of steps) {
+      if (s.status !== 'done' && s.status !== 'skipped') {
+        s.status = finalStatus === 'failed' ? 'failed' : 'done';
+        s.doneAt = now;
+        if (!s.note) s.note = input.summary;
+        await this.store.updateStep(s);
+      }
+    }
+
+    run.reportSummary = input.summary;
+    if (input.reportData) run.reportData = input.reportData;
+    run.status = finalStatus;
+    run.heartbeatAt = now;
+    run.updatedAt = now;
+    run.endedAt = now;
+    await this.store.updateRun(run);
+
+    // Update sub-agent presence status
+    await this.store.updateTokenByActor(p.wsId, run.ownerAgent, {
+      lastSeenAt: now,
+      statusText: finalStatus === 'done' ? `Completed: ${run.title ?? run.id}` : `Failed: ${run.title ?? run.id}`,
+      online: true,
+    });
+
+    // Update linked item if applicable
+    const primaryUrl =
+      attachedArtifacts.find((a) => a.url)?.url ??
+      attachedArtifacts.find((a) => a.ref.startsWith('http'))?.ref;
+    if (run.itemId) {
+      const item = await this.store.getItem(run.itemId);
+      if (item && (!run.parentRunId || item.linkedRunId === run.id)) {
+        item.status = finalStatus === 'done' ? 'done' : item.status;
+        if (primaryUrl) item.resultUrl = primaryUrl;
+        item.version += 1;
+        item.updatedAt = now;
+        await this.store.updateItem(item);
+      } else if (item && primaryUrl && !item.resultUrl) {
+        item.resultUrl = primaryUrl;
+        item.version += 1;
+        item.updatedAt = now;
+        await this.store.updateItem(item);
+      }
+    }
+
+    const artifactLines =
+      attachedArtifacts.length > 0
+        ? '\n' +
+          attachedArtifacts
+            .map((a) => `• [${a.kind.toUpperCase()}] ${a.label}: ${a.url ?? a.ref}`)
+            .join('\n')
+        : '';
+
+    let parentMessage: ThreadMessage | undefined;
+    if (run.parentRunId) {
+      const parentRun = await this.store.getRun(run.parentRunId);
+      if (parentRun) {
+        parentMessage = {
+          id: uid('msg'),
+          wsId: p.wsId,
+          scopeKind: 'run',
+          scopeId: parentRun.id,
+          actorId: p.actorId,
+          author: p.actorName,
+          authorKind: p.kind,
+          body: `**Sub-Agent Report (\`${run.id}\` — ${run.title ?? 'subtask'})**: ${input.summary}${artifactLines}`,
+          mentions: [parentRun.ownerAgent],
+          runId: run.id,
+          itemId: run.itemId,
+          hopCount: 0,
+          createdAt: now,
+        };
+        await this.store.createThreadMessage(parentMessage);
+      }
+    }
+
+    const parentTag = run.parentRunId
+      ? await this.store.getRun(run.parentRunId).then((pr) => (pr ? `@${pr.ownerAgent} ` : ''))
+      : '';
+    const workspaceMessage: ThreadMessage = {
+      id: uid('msg'),
+      wsId: p.wsId,
+      scopeKind: 'workspace',
+      scopeId: 'main',
+      actorId: p.actorId,
+      author: p.actorName,
+      authorKind: p.kind,
+      body: `${parentTag}📋 **Report from \`${run.ownerAgent}\`** (${run.title ?? run.id}): ${input.summary}${artifactLines}`,
+      mentions: extractMentions(parentTag),
+      runId: run.id,
+      itemId: run.itemId,
+      hopCount: 1,
+      createdAt: now,
+    };
+    await this.store.createThreadMessage(workspaceMessage);
+
+    await this.emit(
+      p.wsId,
+      'run',
+      run.id,
+      'run.reported',
+      p.actorId,
+      {
+        runId: run.id,
+        parentRunId: run.parentRunId,
+        status: run.status,
+        summary: input.summary,
+        artifacts: attachedArtifacts.map((a) => ({ id: a.id, kind: a.kind, ref: a.ref, url: a.url })),
+      },
+      run.epoch,
+    );
+
+    return { run, parentMessage, workspaceMessage, artifacts: attachedArtifacts };
+  }
+
+  // ---------- Scoped Threads & Workspace Dialogue ----------
   async postThreadMessage(
     p: Principal,
     input: {
-      scopeKind: 'workspace' | 'run' | 'step' | 'card';
-      scopeId: string;
+      scopeKind?: 'workspace' | 'run' | 'step' | 'card';
+      scopeId?: string;
       body: string;
+      replyToId?: string;
+      runId?: string;
+      itemId?: string;
       sendToAgent?: boolean;
+      urgency?: SteerUrgency;
     },
   ): Promise<{ message: ThreadMessage; steer?: Steer }> {
+    if (!input.body || !String(input.body).trim()) {
+      throw Errors.badRequest('Message body cannot be empty');
+    }
+    const scopeKind = input.scopeKind ?? 'workspace';
+    const scopeId = input.scopeId ?? 'main';
+    const body = String(input.body).trim();
+    const mentions = extractMentions(body);
+
+    const existingMsgs = await this.store.listThreadMessages(p.wsId, scopeKind, scopeId);
+    let hopCount = 0;
+    if (p.kind === 'agent') {
+      const prev = existingMsgs[existingMsgs.length - 1];
+      hopCount = prev && prev.authorKind === 'agent' ? (prev.hopCount ?? 1) + 1 : 1;
+      if (hopCount > 6) {
+        throw Errors.badRequest(
+          `Anti-loop guard triggered: hopCount (${hopCount}) exceeds max consecutive agent turns (6) without human input.`,
+        );
+      }
+    }
+
     let steer: Steer | undefined;
-    if (input.sendToAgent && input.scopeKind === 'run') {
-      steer = await this.queueSteer(p, input.scopeId, {
+    const steerRunId = scopeKind === 'run' ? scopeId : input.runId;
+    if (input.sendToAgent && steerRunId) {
+      steer = await this.queueSteer(p, steerRunId, {
         op: 'freeform',
-        payload: { text: input.body },
-        urgency: 'normal',
+        payload: { text: body, from: p.actorId },
+        urgency: input.urgency ?? 'normal',
       });
     }
+
+    const now = new Date().toISOString();
     const msg: ThreadMessage = {
       id: uid('msg'),
       wsId: p.wsId,
-      scopeKind: input.scopeKind,
-      scopeId: input.scopeId,
+      scopeKind,
+      scopeId,
+      actorId: p.actorId,
       author: p.actorName,
       authorKind: p.kind,
-      body: input.body,
+      body,
+      mentions,
+      replyToId: input.replyToId,
+      runId: input.runId ?? (scopeKind === 'run' ? scopeId : undefined),
+      itemId: input.itemId,
+      hopCount,
       steerId: steer?.id,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     };
     await this.store.createThreadMessage(msg);
-    await this.emit(p.wsId, 'thread', input.scopeId, 'thread.message', p.actorId, {
-      scopeKind: input.scopeKind,
+    await this.emit(p.wsId, 'thread', scopeId, 'thread.message', p.actorId, {
+      messageId: msg.id,
+      scopeKind,
+      scopeId,
+      actorId: p.actorId,
+      authorKind: p.kind,
+      body: msg.body,
+      mentions: msg.mentions,
+      hopCount: msg.hopCount,
+      runId: msg.runId,
+      itemId: msg.itemId,
       steerId: steer?.id,
     });
     return { message: msg, steer };
   }
+
+  // ---------- Unified Workspace Context ----------
+  async getContext(
+    p: Principal,
+    opts?: { runId?: string; limit?: number; publicUrl?: string },
+  ): Promise<WorkspaceContext> {
+    const limit = opts?.limit ?? 30;
+    const [tokens, items, allRuns, openCards, workspaceMsgs] = await Promise.all([
+      this.store.listTokens(p.wsId),
+      this.store.listItems(p.wsId),
+      this.store.listRuns(p.wsId),
+      this.store.listCards(p.wsId, { status: 'open' }),
+      this.store.listThreadMessages(p.wsId, 'workspace', 'main'),
+    ]);
+
+    const participants = tokens.map(recordToPrincipal);
+    const activeRuns = allRuns.filter((r) => !TERMINAL_RUN_STATUSES.has(r.status));
+
+    const stepsMap = new Map<string, Step[]>();
+    const artifactsMap = new Map<string, Artifact[]>();
+    const recentArtifacts: Artifact[] = [];
+
+    for (const r of allRuns) {
+      const [st, arts] = await Promise.all([
+        this.store.listSteps(r.id),
+        this.store.listArtifacts(r.id),
+      ]);
+      stepsMap.set(r.id, st);
+      artifactsMap.set(r.id, arts);
+      recentArtifacts.push(...arts);
+    }
+    recentArtifacts.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+    const buildNode = (run: Run): SubrunTreeNode => {
+      const children = allRuns
+        .filter((c) => c.parentRunId === run.id)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .map(buildNode);
+      return {
+        run,
+        steps: stepsMap.get(run.id) ?? [],
+        artifacts: artifactsMap.get(run.id) ?? [],
+        children,
+      };
+    };
+
+    const rootRuns = opts?.runId
+      ? allRuns.filter((r) => r.id === opts.runId)
+      : allRuns.filter((r) => !r.parentRunId);
+    const subrunTree = rootRuns.map(buildNode);
+
+    return {
+      workspaceId: p.wsId,
+      publicUrl: opts?.publicUrl,
+      whoami: p,
+      participants,
+      recentDialogue: workspaceMsgs.slice(-limit),
+      items,
+      activeRuns,
+      subrunTree,
+      openCards,
+      recentArtifacts: recentArtifacts.slice(0, 25),
+    };
+  }
+
 
   // ---------- Background Sweepers: Liveness & Card Expiry ----------
   async sweepLiveness(wsId: string, nowMs = Date.now()): Promise<Run[]> {

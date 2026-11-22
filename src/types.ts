@@ -6,7 +6,14 @@ export interface Principal {
   actorName: string;
   kind: PrincipalKind;
   sponsorHuman?: string;
+  parentAgentId?: string;
   roles: string[];
+  avatarColor?: string;
+  bio?: string;
+  capabilities?: string[];
+  lastSeenAt?: string;
+  statusText?: string;
+  online?: boolean;
 }
 
 export type ItemStatus = 'open' | 'active' | 'done' | 'dropped';
@@ -19,6 +26,12 @@ export interface Item {
   priority: string;
   version: number;
   status: ItemStatus;
+  createdBy: string;
+  assigneeId?: string;
+  parentItemId?: string;
+  tags: string[];
+  linkedRunId?: string;
+  resultUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -32,10 +45,12 @@ export type RunStatus =
   | 'stalled'
   | 'overridden'
   | 'cancelled'
+  | 'failed'
   | 'done';
 
 export const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set([
   'done',
+  'failed',
   'cancelled',
   'overridden',
 ]);
@@ -47,6 +62,13 @@ export interface Run {
   flowTemplateId?: string;
   ownerAgent: string;
   sponsorHuman: string;
+  parentRunId?: string;
+  parentStepIdx?: number;
+  title?: string;
+  goal?: string;
+  reportSummary?: string;
+  reportData?: Record<string, unknown>;
+  depth: number;
   epoch: number;
   planVersion: number;
   status: RunStatus;
@@ -56,6 +78,7 @@ export interface Run {
   subjectPin?: Pin;
   createdAt: string;
   updatedAt: string;
+  endedAt?: string;
 }
 
 export type StepKind = 'task' | 'gate';
@@ -132,7 +155,7 @@ export interface Card {
   answeredAt?: string;
 }
 
-export type ArtifactKind = 'commit' | 'pr' | 'file' | 'url';
+export type ArtifactKind = 'commit' | 'pr' | 'file' | 'url' | 'drive' | 'gdoc';
 
 export interface Artifact {
   id: string;
@@ -141,6 +164,8 @@ export interface Artifact {
   kind: ArtifactKind;
   ref: string;
   label: string;
+  url?: string;
+  meta?: Record<string, unknown>;
   contentHash: string;
   createdAt: string;
 }
@@ -164,11 +189,37 @@ export interface ThreadMessage {
   wsId: string;
   scopeKind: 'workspace' | 'run' | 'step' | 'card';
   scopeId: string;
+  actorId: string;
   author: string;
   authorKind: PrincipalKind;
   body: string;
+  mentions: string[];
+  replyToId?: string;
+  runId?: string;
+  itemId?: string;
+  hopCount: number;
   steerId?: string;
   createdAt: string;
+}
+
+export interface SubrunTreeNode {
+  run: Run;
+  steps: Step[];
+  artifacts: Artifact[];
+  children: SubrunTreeNode[];
+}
+
+export interface WorkspaceContext {
+  workspaceId: string;
+  publicUrl?: string;
+  whoami: Principal;
+  participants: Principal[];
+  recentDialogue: ThreadMessage[];
+  items: Item[];
+  activeRuns: Run[];
+  subrunTree: SubrunTreeNode[];
+  openCards: Card[];
+  recentArtifacts: Artifact[];
 }
 
 export interface RippleEvent {
@@ -205,3 +256,4 @@ export interface HeartbeatResponse {
   urgentSteers: Steer[];
   directives: string[];
 }
+

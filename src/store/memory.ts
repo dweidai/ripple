@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { TERMINAL_RUN_STATUSES } from '../types.js';
 import type {
   Artifact,
@@ -11,6 +13,21 @@ import type {
   ThreadMessage,
 } from '../types.js';
 import type { EventListener, Store, TokenRecord } from './interface.js';
+
+interface PersistedState {
+  workspaces: Array<[string, string]>;
+  tokens: Array<[string, TokenRecord]>;
+  items: Array<[string, Item]>;
+  runs: Array<[string, Run]>;
+  steps: Array<[string, Step[]]>;
+  steers: Array<[string, Steer]>;
+  artifacts: Array<[string, Artifact[]]>;
+  cards: Array<[string, Card]>;
+  flows: Array<[string, FlowTemplate]>;
+  threads: ThreadMessage[];
+  events: RippleEvent[];
+  seq: number;
+}
 
 export class MemoryStore implements Store {
   private workspaces = new Map<string, string>();
@@ -27,21 +44,123 @@ export class MemoryStore implements Store {
   private seq = 0;
   private listeners = new Map<string, Set<EventListener>>();
   private idempotency = new Map<string, unknown>();
+  private saveTimer?: NodeJS.Timeout;
+  private savingPromise: Promise<void> = Promise.resolve();
 
-  async init(): Promise<void> {}
-  async close(): Promise<void> {}
+  constructor(private readonly stateFile?: string) {}
+
+  async init(): Promise<void> {
+    if (!this.stateFile) return;
+    try {
+      const raw = await fs.readFile(this.stateFile, 'utf8');
+      const parsed = JSON.parse(raw) as Partial<PersistedState>;
+      if (parsed.workspaces) this.workspaces = new Map(parsed.workspaces);
+      if (parsed.tokens) this.tokens = new Map(parsed.tokens);
+      if (parsed.items) this.items = new Map(parsed.items);
+      if (parsed.runs) this.runs = new Map(parsed.runs);
+      if (parsed.steps) this.steps = new Map(parsed.steps);
+      if (parsed.steers) this.steers = new Map(parsed.steers);
+      if (parsed.artifacts) this.artifacts = new Map(parsed.artifacts);
+      if (parsed.cards) this.cards = new Map(parsed.cards);
+      if (parsed.flows) this.flows = new Map(parsed.flows);
+      if (parsed.threads) this.threads = parsed.threads;
+      if (parsed.events) this.events = parsed.events;
+      if (typeof parsed.seq === 'number') this.seq = parsed.seq;
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') {
+        console.warn('[ripple] could not load state file, starting fresh:', err?.message);
+      }
+    }
+  }
+
+  async close(): Promise<void> {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = undefined;
+    }
+    await this.flushToDisk();
+  }
+
+  private schedulePersist(): void {
+    if (!this.stateFile) return;
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = undefined;
+      void this.flushToDisk();
+    }, 30);
+  }
+
+  async flushToDisk(): Promise<void> {
+    if (!this.stateFile) return;
+    const stateFile = this.stateFile;
+    this.savingPromise = this.savingPromise
+      .then(async () => {
+        const snapshot: PersistedState = {
+          workspaces: [...this.workspaces.entries()],
+          tokens: [...this.tokens.entries()],
+          items: [...this.items.entries()],
+          runs: [...this.runs.entries()],
+          steps: [...this.steps.entries()],
+          steers: [...this.steers.entries()],
+          artifacts: [...this.artifacts.entries()],
+          cards: [...this.cards.entries()],
+          flows: [...this.flows.entries()],
+          threads: this.threads,
+          events: this.events.slice(-500),
+          seq: this.seq,
+        };
+        await fs.mkdir(path.dirname(stateFile), { recursive: true });
+        const tmpFile = `${stateFile}.tmp`;
+        await fs.writeFile(tmpFile, JSON.stringify(snapshot, null, 2), 'utf8');
+        await fs.rename(tmpFile, stateFile);
+      })
+      .catch((err) => {
+        console.warn('[ripple] state persist warning:', err?.message);
+      });
+    return this.savingPromise;
+  }
 
   async ensureWorkspace(id: string, name: string): Promise<void> {
-    if (!this.workspaces.has(id)) this.workspaces.set(id, name);
+    if (!this.workspaces.has(id)) {
+      this.workspaces.set(id, name);
+      this.schedulePersist();
+    }
   }
 
   async saveToken(record: TokenRecord): Promise<void> {
     this.tokens.set(record.tokenHash, { ...record });
+    this.schedulePersist();
   }
 
   async getTokenByHash(hash: string): Promise<TokenRecord | undefined> {
     const t = this.tokens.get(hash);
     return t ? { ...t } : undefined;
+  }
+
+  async getTokenByActor(wsId: string, actorId: string): Promise<TokenRecord | undefined> {
+    for (const t of this.tokens.values()) {
+      if (t.wsId === wsId && t.actorId === actorId && !t.revokedAt) {
+        return { ...t };
+      }
+    }
+    return undefined;
+  }
+
+  async updateTokenByActor(
+    wsId: string,
+    actorId: string,
+    patch: Partial<TokenRecord>,
+  ): Promise<TokenRecord | undefined> {
+    let updated: TokenRecord | undefined;
+    for (const [hash, t] of this.tokens.entries()) {
+      if (t.wsId === wsId && t.actorId === actorId && !t.revokedAt) {
+        const next: TokenRecord = { ...t, ...patch, tokenHash: hash, wsId, actorId };
+        this.tokens.set(hash, next);
+        updated = { ...next };
+      }
+    }
+    if (updated) this.schedulePersist();
+    return updated;
   }
 
   async listTokens(wsId: string): Promise<TokenRecord[]> {
@@ -50,33 +169,50 @@ export class MemoryStore implements Store {
 
   async revokeToken(hash: string): Promise<void> {
     const t = this.tokens.get(hash);
-    if (t) t.revokedAt = new Date().toISOString();
+    if (t) {
+      t.revokedAt = new Date().toISOString();
+      this.schedulePersist();
+    }
+  }
+
+  async revokeTokensByActor(wsId: string, actorId: string): Promise<void> {
+    const now = new Date().toISOString();
+    for (const t of this.tokens.values()) {
+      if (t.wsId === wsId && t.actorId === actorId && !t.revokedAt) {
+        t.revokedAt = now;
+      }
+    }
+    this.schedulePersist();
   }
 
   async createItem(item: Item): Promise<Item> {
-    this.items.set(item.id, { ...item });
-    return { ...item };
+    this.items.set(item.id, { ...item, tags: [...(item.tags ?? [])] });
+    this.schedulePersist();
+    return { ...item, tags: [...(item.tags ?? [])] };
   }
 
   async getItem(id: string): Promise<Item | undefined> {
     const i = this.items.get(id);
-    return i ? { ...i } : undefined;
+    return i ? { ...i, tags: [...(i.tags ?? [])] } : undefined;
   }
 
   async listItems(wsId: string): Promise<Item[]> {
     return [...this.items.values()]
       .filter((i) => i.wsId === wsId)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((i) => ({ ...i, tags: [...(i.tags ?? [])] }));
   }
 
   async updateItem(item: Item): Promise<Item> {
-    this.items.set(item.id, { ...item });
-    return { ...item };
+    this.items.set(item.id, { ...item, tags: [...(item.tags ?? [])] });
+    this.schedulePersist();
+    return { ...item, tags: [...(item.tags ?? [])] };
   }
 
   async createRun(run: Run): Promise<Run> {
     this.runs.set(run.id, { ...run, touches: [...run.touches] });
-    return { ...run };
+    this.schedulePersist();
+    return { ...run, touches: [...run.touches] };
   }
 
   async getRun(id: string): Promise<Run | undefined> {
@@ -87,12 +223,13 @@ export class MemoryStore implements Store {
   async listRuns(wsId: string): Promise<Run[]> {
     return [...this.runs.values()]
       .filter((r) => r.wsId === wsId)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map((r) => ({ ...r, touches: [...r.touches] }));
   }
 
   async findActiveRunByItem(itemId: string): Promise<Run | undefined> {
     for (const r of this.runs.values()) {
-      if (r.itemId === itemId && !TERMINAL_RUN_STATUSES.has(r.status)) {
+      if (r.itemId === itemId && !TERMINAL_RUN_STATUSES.has(r.status) && !r.parentRunId) {
         return { ...r, touches: [...r.touches] };
       }
     }
@@ -101,7 +238,8 @@ export class MemoryStore implements Store {
 
   async updateRun(run: Run): Promise<Run> {
     this.runs.set(run.id, { ...run, touches: [...run.touches] });
-    return { ...run };
+    this.schedulePersist();
+    return { ...run, touches: [...run.touches] };
   }
 
   async replaceSteps(runId: string, planVersion: number, steps: Step[]): Promise<Step[]> {
@@ -109,6 +247,7 @@ export class MemoryStore implements Store {
       `${runId}:${planVersion}`,
       steps.map((s) => ({ ...s })),
     );
+    this.schedulePersist();
     return steps.map((s) => ({ ...s }));
   }
 
@@ -128,11 +267,13 @@ export class MemoryStore implements Store {
     if (idx >= 0) arr[idx] = { ...step };
     else arr.push({ ...step });
     this.steps.set(key, arr);
+    this.schedulePersist();
     return { ...step };
   }
 
   async createSteer(steer: Steer): Promise<Steer> {
     this.steers.set(steer.id, { ...steer });
+    this.schedulePersist();
     return { ...steer };
   }
 
@@ -149,6 +290,7 @@ export class MemoryStore implements Store {
 
   async updateSteer(steer: Steer): Promise<Steer> {
     this.steers.set(steer.id, { ...steer });
+    this.schedulePersist();
     return { ...steer };
   }
 
@@ -156,6 +298,7 @@ export class MemoryStore implements Store {
     const arr = this.artifacts.get(artifact.runId) ?? [];
     arr.push({ ...artifact });
     this.artifacts.set(artifact.runId, arr);
+    this.schedulePersist();
     return { ...artifact };
   }
 
@@ -165,6 +308,7 @@ export class MemoryStore implements Store {
 
   async createCard(card: Card): Promise<Card> {
     this.cards.set(card.id, { ...card, options: [...card.options], pin: { ...card.pin } });
+    this.schedulePersist();
     return { ...card };
   }
 
@@ -186,11 +330,13 @@ export class MemoryStore implements Store {
 
   async updateCard(card: Card): Promise<Card> {
     this.cards.set(card.id, { ...card, options: [...card.options], pin: { ...card.pin } });
+    this.schedulePersist();
     return { ...card };
   }
 
   async createFlow(flow: FlowTemplate): Promise<FlowTemplate> {
     this.flows.set(flow.id, { ...flow });
+    this.schedulePersist();
     return { ...flow };
   }
 
@@ -204,20 +350,22 @@ export class MemoryStore implements Store {
   }
 
   async createThreadMessage(msg: ThreadMessage): Promise<ThreadMessage> {
-    this.threads.push({ ...msg });
-    return { ...msg };
+    this.threads.push({ ...msg, mentions: [...(msg.mentions ?? [])] });
+    this.schedulePersist();
+    return { ...msg, mentions: [...(msg.mentions ?? [])] };
   }
 
   async listThreadMessages(wsId: string, scopeKind: string, scopeId: string): Promise<ThreadMessage[]> {
-    return this.threads.filter(
-      (m) => m.wsId === wsId && m.scopeKind === scopeKind && m.scopeId === scopeId,
-    );
+    return this.threads
+      .filter((m) => m.wsId === wsId && m.scopeKind === scopeKind && m.scopeId === scopeId)
+      .map((m) => ({ ...m, mentions: [...(m.mentions ?? [])] }));
   }
 
   async appendEvent(event: Omit<RippleEvent, 'seq'>): Promise<RippleEvent> {
     this.seq += 1;
     const full: RippleEvent = { ...event, seq: this.seq };
     this.events.push(full);
+    this.schedulePersist();
     const set = this.listeners.get(event.wsId);
     if (set) {
       for (const fn of set) {
@@ -255,3 +403,4 @@ export class MemoryStore implements Store {
     this.idempotency.set(key, response);
   }
 }
+

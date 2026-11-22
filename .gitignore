@@ -4,3 +4,8 @@ dist-test/
 .env
 *.log
 .DS_Store
+.ripple-data/
+.worktrees/
+bin/
+.agents/
+

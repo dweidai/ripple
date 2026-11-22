@@ -2,9 +2,65 @@
   {
     "type": "function",
     "function": {
+      "name": "ripple_get_context",
+      "description": "Fetch full workspace situational awareness: whoami, participants, recent dialogue, backlog items, active runs, subrun tree, open cards, and recent artifacts.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "limit": { "type": "integer" }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "ripple_list_items",
       "description": "List backlog items, active runs, and open decision cards in Ripple.",
       "parameters": { "type": "object", "properties": {}, "required": [] }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_create_item",
+      "description": "Create a new backlog item or subtask for humans or agents to track.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "body": { "type": "string" },
+          "priority": { "type": "string" },
+          "assignee_id": { "type": "string" },
+          "parent_item_id": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["title"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_update_item",
+      "description": "Update an existing backlog item or task (title, body, priority, status, assignee_id, parent_item_id, tags, result_url).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_id": { "type": "string" },
+          "title": { "type": "string" },
+          "body": { "type": "string" },
+          "priority": { "type": "string" },
+          "status": { "type": "string", "enum": ["open", "active", "done", "dropped"] },
+          "assignee_id": { "type": "string" },
+          "parent_item_id": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "result_url": { "type": "string" }
+        },
+        "required": ["item_id"]
+      }
     }
   },
   {
@@ -67,6 +123,77 @@
   {
     "type": "function",
     "function": {
+      "name": "ripple_spawn_subrun",
+      "description": "Spawn a sub-agent and child Run under a parent Run (up to depth 3).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "parent_run_id": { "type": "string" },
+          "title": { "type": "string" },
+          "goal": { "type": "string" },
+          "subagent_id": { "type": "string" },
+          "subagent_name": { "type": "string" },
+          "item_id": { "type": "string" },
+          "parent_step_idx": { "type": "integer" }
+        },
+        "required": ["parent_run_id", "title"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_report_run",
+      "description": "Report completion of a sub-agent run or primary run, attach PR/Drive/Doc artifacts, and notify parent run and workspace dialogue.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "epoch": { "type": "integer" },
+          "summary": { "type": "string" },
+          "status": { "type": "string", "enum": ["done", "failed"] },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": { "type": "string", "enum": ["commit", "pr", "file", "url", "drive", "gdoc"] },
+                "ref": { "type": "string" },
+                "title": { "type": "string" },
+                "url": { "type": "string" }
+              },
+              "required": ["kind", "ref"]
+            }
+          }
+        },
+        "required": ["run_id", "summary"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_artifact",
+      "description": "Attach an artifact (commit, pr, file, url, drive, gdoc) with content_hash/SHA.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "epoch": { "type": "integer" },
+          "step_idx": { "type": "integer" },
+          "kind": { "type": "string", "enum": ["commit", "pr", "file", "url", "drive", "gdoc"] },
+          "ref": { "type": "string" },
+          "label": { "type": "string" },
+          "url": { "type": "string" },
+          "content_hash": { "type": "string" }
+        },
+        "required": ["run_id", "epoch", "step_idx", "kind", "ref"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "ripple_checkpoint",
       "description": "Report a safe checkpoint and receive any queued human steers and overlap warnings.",
       "parameters": {
@@ -77,6 +204,21 @@
           "after_step": { "type": "integer" }
         },
         "required": ["run_id", "epoch", "after_step"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_heartbeat",
+      "description": "Send liveness heartbeat (every <=60s).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "epoch": { "type": "integer" }
+        },
+        "required": ["run_id", "epoch"]
       }
     }
   },
@@ -100,7 +242,7 @@
     "type": "function",
     "function": {
       "name": "ripple_ask",
-      "description": "Raise a pin-bound decision Card (approve/choose/provide/review) for a human.",
+      "description": "Raise a pin-bound decision Card (approve/choose/provide/review) for a human or agent.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -118,6 +260,23 @@
   {
     "type": "function",
     "function": {
+      "name": "ripple_answer_card",
+      "description": "Answer an open Decision Card with CAS pin verification.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "card_id": { "type": "string" },
+          "option": { "type": "string" },
+          "on_pin": { "type": "string" },
+          "note": { "type": "string" }
+        },
+        "required": ["card_id", "option", "on_pin"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "ripple_await",
       "description": "Wait for a Card to be answered, staled, expired, or withdrawn.",
       "parameters": {
@@ -127,6 +286,37 @@
           "timeout_ms": { "type": "integer" }
         },
         "required": ["card_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_post_message",
+      "description": "Post a message to the workspace dialogue (workspace/main) or a run thread with @mentions.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "body": { "type": "string" },
+          "scope_kind": { "type": "string", "enum": ["workspace", "run", "step", "card"] },
+          "scope_id": { "type": "string" }
+        },
+        "required": ["body"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ripple_read_messages",
+      "description": "Read messages from the workspace dialogue or a run thread.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "scope_kind": { "type": "string", "enum": ["workspace", "run", "step", "card"] },
+          "scope_id": { "type": "string" }
+        },
+        "required": []
       }
     }
   }

@@ -238,8 +238,279 @@ describe('RippleEngine core invariants', () => {
       assert.match(bodyText, /ripple_claim/);
       assert.match(bodyText, /ripple_checkpoint/);
       assert.match(bodyText, /ripple_ask/);
+      assert.match(bodyText, /ripple_get_context/);
+      assert.match(bodyText, /ripple_create_item/);
+      assert.match(bodyText, /ripple_update_item/);
+      assert.match(bodyText, /ripple_post_message/);
+      assert.match(bodyText, /ripple_read_messages/);
+      assert.match(bodyText, /ripple_spawn_subrun/);
+      assert.match(bodyText, /ripple_report_run/);
+      assert.match(bodyText, /ripple_answer_card/);
     } finally {
       server.close();
     }
   });
+
+  it('supports human profile updates, backlog item CRUD with subtasks/tags/assignee, and getContext', async () => {
+    const { engine, human, agy } = await setup();
+
+    const updatedMe = await engine.updateProfile(human.principal, {
+      actorName: 'David (@dweidai)',
+      statusText: 'Reviewing from phone',
+      bio: 'Workspace Lead',
+      avatarColor: '#3fb950',
+    });
+    assert.equal(updatedMe.actorName, 'David (@dweidai)');
+    assert.equal(updatedMe.statusText, 'Reviewing from phone');
+    assert.equal(updatedMe.online, true);
+
+    const epic = await engine.createItem(human.principal, {
+      title: 'Multi-Agent Workspace Epic',
+      body: 'Parent task for Drive spec and GitHub PR',
+      priority: 'P0',
+      assigneeId: 'agy',
+      tags: ['epic', 'github', 'drive'],
+    });
+    assert.equal(epic.createdBy, 'maya');
+    assert.equal(epic.assigneeId, 'agy');
+    assert.deepEqual(epic.tags, ['epic', 'github', 'drive']);
+
+    const subtask = await engine.createItem(agy.principal, {
+      title: 'Draft Google Doc Spec',
+      priority: 'P1',
+      assigneeId: 'muse',
+      parentItemId: epic.id,
+      tags: ['gdocs'],
+    });
+    assert.equal(subtask.parentItemId, epic.id);
+    assert.equal(subtask.createdBy, 'agy');
+
+    const patched = await engine.updateItem(agy.principal, subtask.id, {
+      status: 'done',
+      resultUrl: 'https://docs.google.com/document/d/doc_123/edit',
+      tags: ['gdocs', 'completed'],
+    });
+    assert.equal(patched.status, 'done');
+    assert.equal(patched.version, 2);
+    assert.equal(patched.resultUrl, 'https://docs.google.com/document/d/doc_123/edit');
+
+    const ctx = await engine.getContext(human.principal);
+    assert.equal(ctx.workspaceId, 'ws_1');
+    assert.equal(ctx.items.length, 2);
+    assert.ok(ctx.participants.some((p) => p.actorName === 'David (@dweidai)'));
+  });
+
+  it('spawns hierarchical sub-runs up to depth 3, reports artifacts back to parent run & workspace dialogue', async () => {
+    const { engine, human, agy } = await setup();
+    const item = await engine.createItem(human.principal, {
+      title: 'Ship Sub-Agent PR & Drive Doc',
+      assigneeId: 'agy',
+    });
+    const parentRun = await engine.claim(agy.principal, item.id);
+    await engine.plan(agy.principal, parentRun.id, {
+      epoch: 1,
+      steps: [{ title: 'Spawn PR sub-agent' }, { title: 'Verify report' }],
+    });
+
+    const sub1 = await engine.spawnSubrun(agy.principal, parentRun.id, {
+      title: 'Create GitHub PR via gh CLI',
+      goal: 'Open PR on dweidai/ripple',
+      subagentId: 'agy-sub-github',
+      subagentName: 'Agy GitHub Sub-Agent',
+      parentStepIdx: 1,
+      steps: [{ title: 'Create branch & commit' }, { title: 'Open PR' }],
+      touches: ['docs/subagents'],
+    });
+    assert.equal(sub1.run.parentRunId, parentRun.id);
+    assert.equal(sub1.run.depth, 1);
+    assert.equal(sub1.subagent.parentAgentId, 'agy');
+
+    // Test depth limit enforcement (depth 1 -> 2 -> 3 -> 4 throws 400)
+    const sub2 = await engine.spawnSubrun(sub1.subagent, sub1.run.id, { title: 'Depth 2 child' });
+    assert.equal(sub2.run.depth, 2);
+    const sub3 = await engine.spawnSubrun(sub2.subagent, sub2.run.id, { title: 'Depth 3 child' });
+    assert.equal(sub3.run.depth, 3);
+    await assert.rejects(
+      () => engine.spawnSubrun(sub3.subagent, sub3.run.id, { title: 'Depth 4 overflow' }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+
+    // Report completion of sub1 with PR and Google Doc artifacts
+    const report = await engine.reportRun(sub1.subagent, sub1.run.id, {
+      epoch: 1,
+      summary: 'Opened PR #42 and linked Google Doc specification',
+      status: 'done',
+      artifacts: [
+        {
+          kind: 'pr',
+          ref: 'https://github.com/dweidai/ripple/pull/42',
+          title: 'PR #42: Sub-agent spec',
+          url: 'https://github.com/dweidai/ripple/pull/42',
+        },
+        {
+          kind: 'gdoc',
+          ref: 'https://docs.google.com/document/d/12345/edit',
+          title: 'Google Doc Spec',
+          url: 'https://docs.google.com/document/d/12345/edit',
+        },
+      ],
+    });
+    assert.equal(report.run.status, 'done');
+    assert.equal(report.artifacts.length, 2);
+    assert.ok(report.parentMessage);
+    assert.ok(report.workspaceMessage);
+
+    // Verify parent run thread and workspace dialogue received the report
+    const parentMsgs = await engine.store.listThreadMessages('ws_1', 'run', parentRun.id);
+    assert.ok(parentMsgs.some((m) => m.body.includes('Opened PR #42')));
+    const wsMsgs = await engine.store.listThreadMessages('ws_1', 'workspace', 'main');
+    assert.ok(wsMsgs.some((m) => m.body.includes('Opened PR #42')));
+
+    const ctx = await engine.getContext(agy.principal);
+    assert.equal(ctx.subrunTree.length, 1);
+    assert.equal(ctx.subrunTree[0].children.length, 1);
+  });
+
+  it('extracts @mentions in multi-agent dialogue and enforces hopCount anti-loop guard', async () => {
+    const { engine, human, agy, grok } = await setup();
+
+    const m0 = await engine.postThreadMessage(human.principal, {
+      scopeKind: 'workspace',
+      scopeId: 'main',
+      body: 'Hey @agy and @muse, please sync the backlog and spin sub-agents!',
+    });
+    assert.deepEqual(m0.message.mentions, ['agy', 'muse']);
+    assert.equal(m0.message.hopCount, 0);
+
+    // 6 consecutive agent replies succeed, 7th without human input is blocked by anti-loop guard
+    for (let i = 1; i <= 6; i++) {
+      const sender = i % 2 === 1 ? agy.principal : grok.principal;
+      const res = await engine.postThreadMessage(sender, {
+        scopeKind: 'workspace',
+        scopeId: 'main',
+        body: `@${i % 2 === 1 ? 'grok' : 'agy'} agent turn ${i}`,
+      });
+      assert.equal(res.message.hopCount, i);
+    }
+
+    await assert.rejects(
+      () =>
+        engine.postThreadMessage(agy.principal, {
+          scopeKind: 'workspace',
+          scopeId: 'main',
+          body: '@grok turn 7 runaway loop',
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+
+    // Human message resets hopCount back to 0
+    const resetMsg = await engine.postThreadMessage(human.principal, {
+      scopeKind: 'workspace',
+      scopeId: 'main',
+      body: 'Human check-in resets hopCount',
+    });
+    assert.equal(resetMsg.message.hopCount, 0);
+  });
+
+  it('supports self-service agent invites, doorway markdown guide, and file-backed MemoryStore persistence', async () => {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const tmpFile = path.resolve(
+      '/home/antigravity/.gemini/jetski/scratch/teamwork_tmp/f61cd444cd24e10d1755b65be5f1559b',
+      `state-${Date.now()}.json`,
+    );
+
+    const store1 = new MemoryStore(tmpFile);
+    await store1.init();
+    await store1.ensureWorkspace('ws_persist', 'Persist Test');
+    const auth1 = new AuthService(store1);
+    const engine1 = new RippleEngine(store1);
+    const human = await auth1.mintToken({
+      wsId: 'ws_persist',
+      actorId: 'you',
+      actorName: 'David (@dweidai)',
+      kind: 'human',
+      rawToken: 'rpl_david_persist',
+    });
+    await engine1.createItem(human.principal, { title: 'Persisted Task', priority: 'P0' });
+    await store1.close();
+
+    // Reload from disk in a fresh MemoryStore instance
+    const store2 = new MemoryStore(tmpFile);
+    await store2.init();
+    const auth2 = new AuthService(store2);
+    const engine2 = new RippleEngine(store2);
+    const items = await store2.listItems('ws_persist');
+    assert.equal(items.length, 1);
+    assert.equal(items[0].title, 'Persisted Task');
+
+    const server = createRippleHttpServer(engine2, auth2, 'https://demo.trycloudflare.com');
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${port}`;
+
+    try {
+      const inviteRes = await fetch(`${base}/api/v1/invites`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer rpl_david_persist' },
+        body: JSON.stringify({ actorId: 'muse', actorName: 'Muse (@muse)', announceInDialogue: true }),
+      }).then((r) => r.json());
+      assert.equal(inviteRes.principal.actorId, 'muse');
+      assert.ok(inviteRes.rawToken.startsWith('rpl_'));
+      assert.ok(inviteRes.onboarding.mcpJson.mcpServers.ripple.url.endsWith('/mcp'));
+
+      const guideMd = await fetch(`${base}/w/ws_persist/agent.md?token=${inviteRes.rawToken}`).then((r) =>
+        r.text(),
+      );
+      assert.match(guideMd, /Ripple Workspace Doorway Guide/);
+      assert.match(guideMd, /Muse \(@muse\)/);
+      assert.match(guideMd, /ripple_spawn_subrun/);
+    } finally {
+      server.close();
+      await store2.close();
+      await fs.rm(path.dirname(tmpFile), { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it('coordinates live MultiAgentBridge dialogue between David, Muse, and Antigravity and spawns sub-agents', async () => {
+    const { MultiAgentBridge } = await import('../src/agents/bridge.js');
+    const { store, auth, engine, human } = await setup();
+    await auth.mintToken({
+      wsId: 'ws_1',
+      actorId: 'muse',
+      actorName: 'Muse (@muse)',
+      kind: 'agent',
+      sponsorHuman: 'maya',
+      rawToken: 'rpl_muse_test',
+    });
+
+    const bridge = new MultiAgentBridge(engine, auth, {
+      wsId: 'ws_1',
+      enabled: true,
+      executeRealTools: false, // use deterministic fast tool mock in unit test
+    });
+
+    const res = await bridge.runCollaborativeTurn({
+      scopeKind: 'workspace',
+      scopeId: 'main',
+      userPrompt: '@muse @agy Sync backlog tasks and spin up sub-agents for Drive spec and GitHub PR!',
+      spawnTools: true,
+      syncBacklog: true,
+    });
+
+    assert.ok(res.gdocResult);
+    assert.ok(res.prResult);
+    assert.ok(res.museRun);
+    assert.ok(res.agyRun);
+
+    const ctx = await engine.getContext(human.principal);
+    assert.ok(ctx.items.length >= 2);
+    assert.ok(ctx.recentDialogue.some((m) => m.actorId === 'muse'));
+    assert.ok(ctx.recentDialogue.some((m) => m.actorId === 'agy'));
+    assert.ok(ctx.recentArtifacts.some((a) => a.kind === 'gdoc'));
+    assert.ok(ctx.recentArtifacts.some((a) => a.kind === 'pr'));
+    assert.ok(ctx.openCards.some((c) => c.type === 'review'));
+  });
 });
+
+
