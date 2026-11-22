@@ -169,7 +169,29 @@ export function createRippleApp(
 ) {
   const app = new Hono<Env>();
 
-  app.use('*', cors());
+  const allowedOrigins = (process.env.RIPPLE_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  app.use('*', async (c, next) => {
+    await next();
+    c.header('X-Content-Type-Options', 'nosniff');
+    c.header('X-Frame-Options', 'DENY');
+    c.header('Referrer-Policy', 'no-referrer');
+  });
+
+  app.use(
+    '*',
+    cors({
+      origin: (origin) => {
+        if (!origin) return '';
+        if (allowedOrigins.includes(origin)) return origin;
+        if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) return origin;
+        return '';
+      },
+    }),
+  );
 
   app.onError((err, c) => {
     if (err instanceof RippleError) {
@@ -201,8 +223,9 @@ export function createRippleApp(
     }
     const base = resolvePublicUrl(c, publicUrl);
     const wsId = whoami?.wsId ?? 'ws_default';
-    const tokens = await engine.store.listTokens(wsId);
-    const participants = tokens.map(recordToPrincipal);
+    const participants = whoami
+      ? (await engine.store.listTokens(wsId)).map(recordToPrincipal)
+      : [];
 
     return c.json({
       service: 'ripple',
@@ -242,43 +265,22 @@ export function createRippleApp(
       whoami = null;
     }
     const base = resolvePublicUrl(c, publicUrl);
-    const tokens = await engine.store.listTokens(whoami?.wsId ?? wsId);
+    const participants = whoami
+      ? (await engine.store.listTokens(whoami.wsId)).map(recordToPrincipal)
+      : [];
     const md = renderDoorwayMarkdown({
       base,
       wsId: whoami?.wsId ?? wsId,
       token: queryToken,
       whoami,
-      participants: tokens.map(recordToPrincipal),
+      participants,
     });
     return c.text(md, 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
   };
   app.get('/w/:wsId/agent.md', handleAgentMd);
   app.get('/agent.md', handleAgentMd);
 
-  // Public starter / phone auto-login helper so opening the URL on a phone logs straight in as David (@dweidai)
-  app.get('/api/v1/demo-actors', async (c) => {
-    const wsId = c.req.query('ws_id') || 'ws_default';
-    const tokens = await engine.store.listTokens(wsId);
-    const base = resolvePublicUrl(c, publicUrl);
-    const actors = tokens.map((t) => ({
-      actorId: t.actorId,
-      actorName: t.actorName,
-      kind: t.kind,
-      roles: t.roles,
-      parentAgentId: t.parentAgentId,
-      avatarColor: t.avatarColor,
-      statusText: t.statusText,
-      online: t.online ?? true,
-      rawToken: t.rawToken,
-    }));
-    const defaultHuman = actors.find((a) => a.kind === 'human') ?? actors[0];
-    return c.json({
-      publicUrl: base,
-      defaultToken: defaultHuman?.rawToken ?? 'rpl_human_dev_token',
-      defaultActor: defaultHuman,
-      actors,
-    });
-  });
+  // /api/v1/demo-actors removed for security (tokens must never be exposed unauthenticated)
 
   // Serve Web UI
   const possibleHtmlPaths = [
@@ -420,10 +422,7 @@ export function createRippleApp(
       flows: flowsWithHistory,
       messages: workspaceMessages,
       events: events.reverse(),
-      agents: tokens.map((t) => ({
-        ...recordToPrincipal(t),
-        rawToken: t.rawToken,
-      })),
+      agents: tokens.map((t) => recordToPrincipal(t)),
     });
   });
 

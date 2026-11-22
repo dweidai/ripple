@@ -972,7 +972,6 @@ export class RippleEngine {
       const rawToken = generateToken(subagentId.replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'sub');
       await this.store.saveToken({
         tokenHash: hashToken(rawToken),
-        rawToken,
         wsId: p.wsId,
         actorId: subagentId,
         actorName: subagentName,

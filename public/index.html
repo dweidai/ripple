@@ -295,26 +295,55 @@
     </div>
   </div>
 
+  <!-- MODAL: Sign In (shown only if unauthenticated) -->
+  <div id="auth-modal" class="modal-backdrop fixed inset-0 z-50 bg-slate-900/30 backdrop-blur-sm items-center justify-center p-4">
+    <div class="bg-white rounded-3xl max-w-md w-full shadow-soft border border-neutral-100 p-6 space-y-4">
+      <div>
+        <h2 class="text-base font-bold text-slate-900">Sign in to Ripple</h2>
+        <p class="text-xs text-slate-400 mt-1">Paste your workspace access token to continue.</p>
+      </div>
+      <input id="auth-token-input" type="password" placeholder="rpl_human_..." class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-200" onkeydown="if(event.key==='Enter') submitAuthToken()" />
+      <div class="flex justify-end">
+        <button onclick="submitAuthToken()" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-5 py-2.5 rounded-full shadow-btn transition">Connect</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast -->
   <div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs font-medium px-4 py-2.5 rounded-full shadow-lg z-50"></div>
 
   <script>
     const urlParams = new URLSearchParams(window.location.search);
-    const token = urlParams.get('token') || localStorage.getItem('ripple_token') || 'rpl_human_dev_token';
-    if (urlParams.get('token')) localStorage.setItem('ripple_token', token);
+    const queryTok = urlParams.get('token');
+    if (queryTok) {
+      localStorage.setItem('ripple_token', queryTok);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    let token = localStorage.getItem('ripple_token') || '';
 
     let snapshot = null;
     let publicBase = window.location.origin;
     let selectedPreset = 'agy';
     let currentTab = 'chat';
+    let mintedTokenCache = {};
 
     const AGENTS_META = {
-      agy: { actorId: 'agy', name: 'Antigravity (@agy)', token: 'rpl_agy_dev_token' },
-      muse: { actorId: 'muse', name: 'Muse (@muse)', token: 'rpl_muse_dev_token' },
-      openclaw: { actorId: 'openclaw', name: 'OpenClaw (@openclaw)', token: 'rpl_openclaw_dev_token' },
-      grok: { actorId: 'grok', name: 'Grok (@grok)', token: 'rpl_grok_dev_token' },
-      custom: { actorId: 'custom-agent', name: 'Custom Agent', token: 'rpl_custom_' + Math.random().toString(36).substring(2, 8) }
+      agy: { actorId: 'agy', name: 'Antigravity (@agy)' },
+      muse: { actorId: 'muse', name: 'Muse (@muse)' },
+      openclaw: { actorId: 'openclaw', name: 'OpenClaw (@openclaw)' },
+      grok: { actorId: 'grok', name: 'Grok (@grok)' },
+      custom: { actorId: 'custom-agent', name: 'Custom Agent' }
     };
+
+    function submitAuthToken() {
+      const val = document.getElementById('auth-token-input').value.trim();
+      if (!val) return;
+      token = val;
+      localStorage.setItem('ripple_token', token);
+      document.getElementById('auth-modal').classList.remove('open');
+      loadSnapshot();
+      connectSSE();
+    }
 
     function toggleMobileSidebar(forceState) {
       const aside = document.getElementById('left-sidebar');
@@ -377,47 +406,67 @@
       renderPromptPreview();
     }
 
-    function renderPromptPreview() {
-      const a = AGENTS_META[selectedPreset];
+    function buildPromptText(a, agentToken) {
       const base = publicBase;
       const mcpUrl = `${base}/mcp`;
-      document.getElementById('mcp-preview-url').textContent = mcpUrl;
-
-      document.getElementById('prompt-preview').textContent =
-`You are invited to join David's collaborative workspace "Ripple" as ${a.name}.
+      const tokDisplay = agentToken || '<click "Copy Prompt for Agent" to mint a fresh token>';
+      return `You are invited to join David's collaborative workspace "Ripple" as ${a.name}.
 
 1. Workspace Endpoint: ${base}
-2. Your Bearer Token: ${a.token}
+2. Your Bearer Token: ${tokDisplay}
 3. Step 1 (Check In):
 curl -fsSL -X POST "${base}/api/v1/threads/workspace/main" \\
-  -H "Authorization: Bearer ${a.token}" \\
+  -H "Authorization: Bearer ${tokDisplay}" \\
   -H "Content-Type: application/json" \\
   -d '{"body":"@you Hi David! ${a.name} is connected and ready to collaborate."}'
 
 4. Step 2 (Get Context & Backlog):
-curl -fsSL -H "Authorization: Bearer ${a.token}" "${base}/api/v1/context"
+curl -fsSL -H "Authorization: Bearer ${tokDisplay}" "${base}/api/v1/context"
 
 5. MCP Configuration:
 {
   "mcpServers": {
     "ripple": {
       "url": "${mcpUrl}",
-      "headers": { "Authorization": "Bearer ${a.token}" }
+      "headers": { "Authorization": "Bearer ${tokDisplay}" }
     }
   }
 }`;
     }
 
+    function renderPromptPreview() {
+      const a = AGENTS_META[selectedPreset];
+      const base = publicBase;
+      document.getElementById('mcp-preview-url').textContent = `${base}/mcp`;
+      document.getElementById('prompt-preview').textContent = buildPromptText(a, mintedTokenCache[selectedPreset]);
+    }
+
     async function copyAgentPrompt() {
+      const a = AGENTS_META[selectedPreset];
+      if (!mintedTokenCache[selectedPreset]) {
+        const res = await api('POST', '/api/v1/invites', {
+          actorId: a.actorId,
+          actorName: a.name,
+          kind: 'agent',
+          rotate: true,
+        });
+        if (!res || !res.rawToken) {
+          showToast('Sign in first to mint an invite token');
+          return;
+        }
+        mintedTokenCache[selectedPreset] = res.rawToken;
+        renderPromptPreview();
+        loadSnapshot();
+      }
       const text = document.getElementById('prompt-preview').textContent;
       try {
         await navigator.clipboard.writeText(text);
-        showToast('Copied prompt! Paste it into your agent.');
+        showToast(`Minted token for ${a.name} & copied prompt!`);
         const btnText = document.getElementById('btn-copy-text');
         btnText.textContent = 'Copied!';
         setTimeout(() => { btnText.textContent = 'Copy Prompt for Agent'; }, 2000);
       } catch {
-        showToast('Select text above to copy');
+        showToast('Minted token! Select text above to copy.');
       }
     }
 
@@ -436,6 +485,10 @@ curl -fsSL -H "Authorization: Bearer ${a.token}" "${base}/api/v1/context"
     }
 
     async function api(method, path, body) {
+      if (!token) {
+        document.getElementById('auth-modal').classList.add('open');
+        return null;
+      }
       const res = await fetch(path, {
         method,
         headers: {
@@ -444,12 +497,18 @@ curl -fsSL -H "Authorization: Bearer ${a.token}" "${base}/api/v1/context"
         },
         body: body ? JSON.stringify(body) : undefined,
       });
+      if (res.status === 401) {
+        document.getElementById('auth-modal').classList.add('open');
+        return null;
+      }
       return res.json();
     }
 
     async function loadSnapshot() {
       try {
-        snapshot = await api('GET', '/api/v1/snapshot');
+        const data = await api('GET', '/api/v1/snapshot');
+        if (!data) return;
+        snapshot = data;
         if (snapshot.publicUrl) publicBase = snapshot.publicUrl;
         renderAll();
       } catch (e) {
@@ -458,11 +517,19 @@ curl -fsSL -H "Authorization: Bearer ${a.token}" "${base}/api/v1/context"
     }
 
     function connectSSE() {
+      if (!token) return;
       const sse = new EventSource(`/api/v1/events?token=${encodeURIComponent(token)}`);
       sse.onmessage = () => loadSnapshot();
       ['thread.message', 'item.created', 'item.updated', 'run.claimed', 'run.planned', 'run.step', 'card.opened', 'card.answered', 'card.stale', 'artifact.added'].forEach(evt => {
         sse.addEventListener(evt, () => loadSnapshot());
       });
+    }
+
+    async function revokeAgent(e, actorId) {
+      e.stopPropagation();
+      await api('DELETE', `/api/v1/tokens/${encodeURIComponent(actorId)}`);
+      showToast(`Revoked @${actorId}`);
+      loadSnapshot();
     }
 
     async function handleSendChat(e) {
@@ -547,12 +614,21 @@ curl -fsSL -H "Authorization: Bearer ${a.token}" "${base}/api/v1/context"
         </div>
       `;
 
+      if (agents.length === 0) {
+        rosterHtml += `
+          <div class="p-4 text-center rounded-2xl bg-slate-50/70 border border-dashed border-slate-200 mt-2">
+            <p class="text-xs text-slate-500 font-medium">No agents invited yet</p>
+            <p class="text-[11px] text-slate-400 mt-0.5">Tap Invite above to generate a prompt for Antigravity or Muse.</p>
+          </div>
+        `;
+      }
+
       agents.forEach(a => {
         const isAgy = a.actorId === 'agy';
         const badgeBg = isAgy ? 'bg-orange-100 text-brand-coral ring-orange-200' : 'bg-violet-100 text-violet-600 ring-violet-200';
         const initials = (a.actorName || a.actorId || 'A').slice(0, 2).toUpperCase();
         rosterHtml += `
-          <div onclick="insertTag('@${esc(a.actorId)} ')" class="p-3 rounded-2xl hover:bg-slate-50 transition cursor-pointer flex items-center justify-between">
+          <div onclick="insertTag('@${esc(a.actorId)} ')" class="p-3 rounded-2xl hover:bg-slate-50 transition cursor-pointer flex items-center justify-between group">
             <div class="flex items-center space-x-3 min-w-0">
               <div class="relative flex-shrink-0">
                 <div class="w-10 h-10 rounded-full ${badgeBg} flex items-center justify-center font-semibold text-xs ring-1">${esc(initials)}</div>
@@ -566,7 +642,7 @@ curl -fsSL -H "Authorization: Bearer ${a.token}" "${base}/api/v1/context"
                 <p class="text-xs text-slate-400 truncate">Tap to @${esc(a.actorId)} in chat</p>
               </div>
             </div>
-            <span class="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0"></span>
+            <button onclick="revokeAgent(event, '${esc(a.actorId)}')" title="Revoke access" class="opacity-60 hover:opacity-100 text-[10px] text-slate-400 hover:text-rose-600 px-2 py-1 rounded-full hover:bg-rose-50 transition">Revoke</button>
           </div>
         `;
       });
