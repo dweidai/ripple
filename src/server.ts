@@ -886,7 +886,10 @@ export function createRippleApp(
   // SSE stream with Last-Event-ID gapless replay
   api.get('/events', async (c) => {
     const p = c.get('principal');
-    const lastId = Number(c.req.header('Last-Event-ID') ?? c.req.query('after') ?? 0);
+    const afterParam = c.req.query('after');
+    const lastIdHeader = c.req.header('Last-Event-ID');
+    const skipReplay = afterParam === 'latest' && !lastIdHeader;
+    const lastId = skipReplay ? 0 : Number(lastIdHeader ?? afterParam ?? 0);
     const encoder = new TextEncoder();
 
     const stream = new ReadableStream({
@@ -894,8 +897,12 @@ export function createRippleApp(
         const send = (ev: { seq: number; type: string }) => {
           controller.enqueue(encoder.encode(`id: ${ev.seq}\nevent: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`));
         };
-        const missed = await engine.store.listEvents(p.wsId, lastId, 100);
-        for (const ev of missed) send(ev);
+        if (!skipReplay) {
+          const missed = await engine.store.listEvents(p.wsId, lastId, 100);
+          for (const ev of missed) send(ev);
+        } else {
+          controller.enqueue(encoder.encode(': connected\n\n'));
+        }
 
         const unsub = engine.store.subscribe(p.wsId, (ev) => send(ev));
         const ping = setInterval(() => {
@@ -904,7 +911,7 @@ export function createRippleApp(
           } catch {
             clearInterval(ping);
           }
-        }, 20_000);
+        }, 15_000);
 
         c.req.raw.signal.addEventListener('abort', () => {
           clearInterval(ping);
@@ -921,7 +928,8 @@ export function createRippleApp(
     return new Response(stream, {
       headers: {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no',
         Connection: 'keep-alive',
       },
     });

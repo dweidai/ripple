@@ -507,13 +507,39 @@ Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events?to
       return res.json();
     }
 
+    let refreshTimer = null;
+    let sseSource = null;
+    let lastRenderSig = '';
+    let lastMsgCount = 0;
+
+    function scheduleRefresh() {
+      if (refreshTimer) return;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        loadSnapshot();
+      }, 150);
+    }
+
     async function loadSnapshot() {
       try {
         const data = await api('GET', '/api/v1/snapshot');
         if (!data) return;
         snapshot = data;
         if (snapshot.publicUrl) publicBase = snapshot.publicUrl;
-        renderAll();
+        const sig = JSON.stringify({
+          m: (data.messages || []).length,
+          lm: (data.messages || []).slice(-1)[0]?.id,
+          i: (data.items || []).length,
+          c: (data.cards || []).map(x => x.id + x.status),
+          r: (data.runs || []).map(x => x.id + x.status),
+          a: (data.agents || []).length,
+          ar: (data.artifacts || []).length,
+          q: document.getElementById('global-search')?.value || ''
+        });
+        if (sig !== lastRenderSig) {
+          lastRenderSig = sig;
+          renderAll();
+        }
       } catch (e) {
         console.error('Snapshot error:', e);
       }
@@ -521,12 +547,33 @@ Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events?to
 
     function connectSSE() {
       if (!token) return;
-      const sse = new EventSource(`/api/v1/events?token=${encodeURIComponent(token)}`);
-      sse.onmessage = () => loadSnapshot();
-      ['thread.message', 'item.created', 'item.updated', 'run.claimed', 'run.planned', 'run.step', 'card.opened', 'card.answered', 'card.stale', 'artifact.added'].forEach(evt => {
-        sse.addEventListener(evt, () => loadSnapshot());
+      if (sseSource) {
+        try { sseSource.close(); } catch {}
+      }
+      const sse = new EventSource(`/api/v1/events?token=${encodeURIComponent(token)}&after=latest`);
+      sseSource = sse;
+      sse.onmessage = () => scheduleRefresh();
+      ['thread.message', 'item.created', 'item.updated', 'run.claimed', 'run.planned', 'run.step', 'run.done', 'card.opened', 'card.answered', 'card.stale', 'artifact.added', 'principal.updated'].forEach(evt => {
+        sse.addEventListener(evt, () => scheduleRefresh());
       });
+      sse.onerror = () => {
+        try { sse.close(); } catch {}
+        setTimeout(connectSSE, 3000);
+      };
     }
+
+    setInterval(() => {
+      if (document.visibilityState === 'visible' && token) loadSnapshot();
+    }, 3000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && token) {
+        loadSnapshot();
+        connectSSE();
+      }
+    });
+    window.addEventListener('focus', () => {
+      if (token) loadSnapshot();
+    });
 
     async function revokeAgent(e, actorId) {
       e.stopPropagation();
