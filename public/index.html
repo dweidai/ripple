@@ -529,6 +529,7 @@ Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events?to
         const sig = JSON.stringify({
           m: (data.messages || []).length,
           lm: (data.messages || []).slice(-1)[0]?.id,
+          rb: (data.messages || []).map(x => (x.readBy || []).map(r => r.actorId + (r.ack ? '!' : '') + (r.emoji || '')).join(',')),
           i: (data.items || []).length,
           c: (data.cards || []).map(x => x.id + x.status),
           r: (data.runs || []).map(x => x.id + x.status),
@@ -553,13 +554,18 @@ Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events?to
       const sse = new EventSource(`/api/v1/events?token=${encodeURIComponent(token)}&after=latest`);
       sseSource = sse;
       sse.onmessage = () => scheduleRefresh();
-      ['thread.message', 'item.created', 'item.updated', 'run.claimed', 'run.planned', 'run.step', 'run.done', 'card.opened', 'card.answered', 'card.stale', 'artifact.added', 'principal.updated'].forEach(evt => {
+      ['thread.message', 'thread.read', 'thread.ack', 'item.created', 'item.updated', 'run.claimed', 'run.planned', 'run.step', 'run.done', 'card.opened', 'card.answered', 'card.stale', 'artifact.added', 'principal.updated'].forEach(evt => {
         sse.addEventListener(evt, () => scheduleRefresh());
       });
       sse.onerror = () => {
         try { sse.close(); } catch {}
         setTimeout(connectSSE, 3000);
       };
+    }
+
+    async function ackMsg(msgId, emoji = '✅') {
+      await api('POST', `/api/v1/threads/workspace/main/messages/${encodeURIComponent(msgId)}/ack`, { emoji, ack: true });
+      loadSnapshot();
     }
 
     setInterval(() => {
@@ -711,12 +717,22 @@ Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events?to
       filteredMsgs.forEach(m => {
         const isHuman = m.authorKind === 'human';
         const time = new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const reads = m.readBy || [];
+        const readPills = reads.map(r => {
+          const icon = r.ack ? (r.emoji || '✅') : '👀';
+          const title = `${r.actorName || r.actorId} ${r.ack ? 'acknowledged' : 'read'} at ${new Date(r.readAt).toLocaleTimeString()}`;
+          return `<span title="${esc(title)}" class="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full ${r.ack ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/70' : 'bg-slate-100 text-slate-500'}">${esc(icon)} @${esc(r.actorId)}</span>`;
+        }).join('');
+
         if (isHuman) {
           chatHtml += `
             <div class="flex justify-end items-end space-x-2">
               <div class="flex flex-col items-end max-w-xl">
                 <div class="bg-white border border-slate-200/80 rounded-2xl rounded-tr-sm px-4 py-3 shadow-bubble text-slate-800 text-sm leading-relaxed whitespace-pre-wrap">${esc(m.body)}</div>
-                <span class="text-[10px] text-slate-400 mt-1 mr-1">${time}</span>
+                <div class="flex flex-wrap items-center justify-end gap-1.5 mt-1 mr-1">
+                  ${readPills}
+                  <span class="text-[10px] text-slate-400">${time}</span>
+                </div>
               </div>
               <div class="w-7 h-7 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center text-[10px] font-semibold mb-4 flex-shrink-0">DD</div>
             </div>
@@ -739,8 +755,10 @@ Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events?to
                   </div>
                   <div class="text-slate-700 whitespace-pre-wrap">${esc(m.body)}</div>
                 </div>
-                <div class="flex items-center space-x-3 mt-1 pl-1 text-slate-400 text-[11px]">
+                <div class="flex flex-wrap items-center gap-2 mt-1 pl-1 text-slate-400 text-[11px]">
+                  <button onclick="ackMsg('${esc(m.id)}', '✅')" class="hover:text-emerald-600 transition">✓ Ack</button>
                   <button onclick="copyText(${JSON.stringify(m.body)})" class="hover:text-slate-600 transition">Copy</button>
+                  ${readPills}
                 </div>
               </div>
             </div>

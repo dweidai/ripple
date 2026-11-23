@@ -785,8 +785,11 @@ export function createRippleApp(
   // Scoped Threads & Workspace Dialogue
   api.get('/threads/:scopeKind/:scopeId', async (c) => {
     const p = c.get('principal');
+    const scopeKind = c.req.param('scopeKind');
+    const scopeId = c.req.param('scopeId');
+    await engine.markThreadRead(p, scopeKind, scopeId);
     return c.json(
-      await engine.store.listThreadMessages(p.wsId, c.req.param('scopeKind'), c.req.param('scopeId')),
+      await engine.store.listThreadMessages(p.wsId, scopeKind, scopeId),
     );
   });
   api.post('/threads/:scopeKind/:scopeId', async (c) => {
@@ -805,6 +808,36 @@ export function createRippleApp(
       }),
       201,
     );
+  });
+  api.post('/threads/:scopeKind/:scopeId/messages/:msgId/ack', async (c) => {
+    const p = c.get('principal');
+    const body = await c.req.json().catch(() => ({}));
+    const updated = await engine.ackMessage(p, {
+      scopeKind: c.req.param('scopeKind'),
+      scopeId: c.req.param('scopeId'),
+      msgId: c.req.param('msgId'),
+      emoji: body.emoji,
+      ack: body.ack ?? true,
+    });
+    return c.json(updated);
+  });
+  api.get('/audit/reads', async (c) => {
+    const p = c.get('principal');
+    const [msgs, events] = await Promise.all([
+      engine.store.listThreadMessages(p.wsId, 'workspace', 'main'),
+      engine.store.listEvents(p.wsId, 0, 100),
+    ]);
+    const readEvents = events.filter((e) => e.type === 'thread.read' || e.type === 'thread.ack');
+    return c.json({
+      messages: msgs.map((m) => ({
+        id: m.id,
+        actorId: m.actorId,
+        author: m.author,
+        createdAt: m.createdAt,
+        readBy: m.readBy ?? [],
+      })),
+      auditEvents: readEvents,
+    });
   });
 
   // Real GitHub (gh) and Google Drive/Docs (gdrive/gdocs) integration endpoints

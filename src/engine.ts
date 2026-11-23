@@ -1341,12 +1341,78 @@ export class RippleEngine {
     return { message: msg, steer };
   }
 
+  async markThreadRead(
+    p: Principal,
+    scopeKind: string,
+    scopeId: string,
+    msgIds?: string[],
+  ): Promise<number> {
+    const msgs = await this.store.listThreadMessages(p.wsId, scopeKind, scopeId);
+    const targetSet = msgIds ? new Set(msgIds) : null;
+    const now = new Date().toISOString();
+    let newlyRead = 0;
+
+    for (const m of msgs) {
+      if (m.actorId === p.actorId) continue;
+      if (targetSet && !targetSet.has(m.id)) continue;
+      const already = (m.readBy ?? []).some((r) => r.actorId === p.actorId);
+      if (!already) {
+        await this.store.recordMessageRead(p.wsId, m.id, {
+          actorId: p.actorId,
+          actorName: p.actorName,
+          kind: p.kind,
+          readAt: now,
+        });
+        newlyRead += 1;
+      }
+    }
+
+    if (newlyRead > 0) {
+      await this.emit(p.wsId, 'thread', scopeId, 'thread.read', p.actorId, {
+        scopeKind,
+        scopeId,
+        actorId: p.actorId,
+        actorKind: p.kind,
+        newlyRead,
+      });
+    }
+    return newlyRead;
+  }
+
+  async ackMessage(
+    p: Principal,
+    input: { scopeKind: string; scopeId: string; msgId: string; emoji?: string; ack?: boolean },
+  ): Promise<ThreadMessage> {
+    const now = new Date().toISOString();
+    const updated = await this.store.recordMessageRead(p.wsId, input.msgId, {
+      actorId: p.actorId,
+      actorName: p.actorName,
+      kind: p.kind,
+      readAt: now,
+      ack: input.ack ?? true,
+      emoji: input.emoji ?? '✅',
+    });
+    if (!updated) throw Errors.notFound('ThreadMessage', input.msgId);
+
+    await this.emit(p.wsId, 'thread', input.msgId, 'thread.ack', p.actorId, {
+      scopeKind: input.scopeKind,
+      scopeId: input.scopeId,
+      msgId: input.msgId,
+      actorId: p.actorId,
+      actorKind: p.kind,
+      emoji: input.emoji ?? '✅',
+      ack: input.ack ?? true,
+    });
+    return updated;
+  }
+
   // ---------- Unified Workspace Context ----------
   async getContext(
     p: Principal,
     opts?: { runId?: string; limit?: number; publicUrl?: string },
   ): Promise<WorkspaceContext> {
     const limit = opts?.limit ?? 30;
+    await this.markThreadRead(p, 'workspace', 'main');
     const [tokens, items, allRuns, openCards, workspaceMsgs] = await Promise.all([
       this.store.listTokens(p.wsId),
       this.store.listItems(p.wsId),
