@@ -378,12 +378,38 @@ export function createRippleMcpServer(engine: RippleEngine, principal: Principal
     },
     async ({ scope_kind, scope_id }) => {
       try {
+        const sk = scope_kind ?? 'workspace';
+        const si = scope_id ?? 'main';
+        await engine.markThreadRead(principal, sk, si);
         return ok(
-          await engine.store.listThreadMessages(
-            principal.wsId,
-            scope_kind ?? 'workspace',
-            scope_id ?? 'main',
-          ),
+          await engine.store.listThreadMessages(principal.wsId, sk, si),
+        );
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  // 15b. ripple_ack_message
+  server.tool(
+    'ripple_ack_message',
+    'Acknowledge or react with an emoji to a message for read/audit attribution.',
+    {
+      msg_id: z.string(),
+      emoji: z.string().optional(),
+      scope_kind: z.enum(['workspace', 'run', 'step', 'card']).optional(),
+      scope_id: z.string().optional(),
+    },
+    async ({ msg_id, emoji, scope_kind, scope_id }) => {
+      try {
+        return ok(
+          await engine.ackMessage(principal, {
+            scopeKind: scope_kind ?? 'workspace',
+            scopeId: scope_id ?? 'main',
+            msgId: msg_id,
+            emoji,
+            ack: true,
+          }),
         );
       } catch (e) {
         return fail(e);

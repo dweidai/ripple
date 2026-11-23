@@ -12,6 +12,7 @@ import type {
   Step,
   RippleEvent,
   ThreadMessage,
+  MessageReadReceipt,
 } from '../types.js';
 import type { EventListener, Store, TokenRecord } from './interface.js';
 
@@ -546,6 +547,10 @@ export class PostgresStore implements Store {
       [wsId, scopeKind, scopeId],
     );
     return rows.map(mapThread);
+  }
+
+  async recordMessageRead(_wsId: string, _msgId: string, _receipt: MessageReadReceipt): Promise<ThreadMessage | undefined> {
+    return undefined;
   }
 
   async appendEvent(ev: Omit<RippleEvent, 'seq'>): Promise<RippleEvent> {

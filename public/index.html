@@ -1,1453 +1,874 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Ripple — Collaborative Human + Multi-Agent Workspace</title>
+  <title>Ripple — Minimalist Team & AI Chat</title>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#fff7ed',
+              100: '#ffedd5',
+              400: '#fb923c',
+              500: '#f97316',
+              coral: '#ff6239',
+              coralHover: '#ea552e',
+              peachBg: '#fff6f1',
+              borderSubtle: '#f3eae5'
+            },
+            surface: {
+              canvas: '#f4f3f0',
+              card: '#ffffff',
+              muted: '#71717a'
+            }
+          },
+          borderRadius: {
+            '2.5xl': '1.25rem',
+            '3xl': '1.5rem',
+            '4xl': '2rem'
+          },
+          boxShadow: {
+            'soft': '0 8px 30px rgba(0, 0, 0, 0.04)',
+            'bubble': '0 2px 10px rgba(0, 0, 0, 0.02)',
+            'btn': '0 4px 14px rgba(255, 98, 57, 0.28)'
+          }
+        }
+      }
+    };
+  </script>
   <style>
-    :root {
-      --bg: #0b0e14;
-      --bg-elev: #111620;
-      --card: #151b26;
-      --card-hover: #1b2230;
-      --border: #252e3f;
-      --fg: #e6edf3;
-      --muted: #8b949e;
-      --primary: #58a6ff;
-      --purple: #bc8cff;
-      --success: #3fb950;
-      --warning: #d29922;
-      --error: #f85149;
-      --pink: #f778ba;
-    }
-    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-    body {
-      margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: var(--bg);
-      color: var(--fg);
-      font-size: 13px;
-      line-height: 1.45;
-      padding-bottom: 72px;
-    }
-    a { color: var(--primary); text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #e4e4e7; border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #d4d4d8; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
-    /* Header & "See Myself" Identity Bar */
-    header {
-      position: sticky;
-      top: 0;
-      z-index: 40;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 10px 16px;
-      border-bottom: 1px solid var(--border);
-      background: rgba(17, 22, 32, 0.95);
-      backdrop-filter: blur(10px);
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; }
-    .logo {
-      width: 30px; height: 30px; border-radius: 8px;
-      background: linear-gradient(135deg, #58a6ff, #bc8cff);
-      color: #0b0e14; display: grid; place-items: center; font-weight: 900; font-size: 16px;
-    }
-    .identity-bar {
-      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    }
-    .me-chip {
-      display: inline-flex; align-items: center; gap: 8px;
-      background: rgba(63, 185, 80, 0.1);
-      border: 1px solid rgba(63, 185, 80, 0.35);
-      border-radius: 999px;
-      padding: 4px 12px 4px 6px;
-      font-size: 12px;
-    }
-    .avatar-dot {
-      width: 24px; height: 24px; border-radius: 50%;
-      background: var(--success); color: #0b0e14;
-      display: inline-grid; place-items: center;
-      font-weight: 800; font-size: 11px; position: relative;
-    }
-    .online-dot {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: var(--success);
-      display: inline-block;
-      box-shadow: 0 0 6px var(--success);
-    }
+    .view-pane { display: none; }
+    .view-pane.active { display: flex; }
 
-    /* Pills & Badges */
-    .pill {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 2px 8px; border-radius: 999px; font-size: 11px;
-      border: 1px solid var(--border); color: var(--muted);
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      white-space: nowrap;
-    }
-    .pill.ok { color: var(--success); border-color: rgba(63,185,80,.4); background: rgba(63,185,80,.08); }
-    .pill.warn { color: var(--warning); border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.08); }
-    .pill.err { color: var(--error); border-color: rgba(248,81,73,.4); background: rgba(248,81,73,.08); }
-    .pill.pri { color: var(--primary); border-color: rgba(88,166,255,.4); background: rgba(88,166,255,.08); }
-    .pill.purp { color: var(--purple); border-color: rgba(188,140,255,.4); background: rgba(188,140,255,.08); }
-
-    /* Buttons & Inputs */
-    button {
-      background: #1f2735; color: var(--fg); border: 1px solid var(--border);
-      border-radius: 7px; padding: 6px 11px; font-size: 12px; font-weight: 500;
-      cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-      min-height: 34px; transition: all 0.12s ease;
-    }
-    button:hover { border-color: var(--primary); background: #263042; }
-    button.primary { background: var(--primary); color: #0b0e14; border-color: var(--primary); font-weight: 700; }
-    button.primary:hover { filter: brightness(1.08); }
-    button.purple { background: var(--purple); color: #0b0e14; border-color: var(--purple); font-weight: 700; }
-    button.success { background: var(--success); color: #0b0e14; border-color: var(--success); font-weight: 700; }
-    button.danger { color: var(--error); border-color: rgba(248,81,73,.5); background: rgba(248,81,73,.08); }
-    button.sm { min-height: 28px; padding: 3px 8px; font-size: 11px; }
-    input, textarea, select {
-      width: 100%; background: var(--bg); color: var(--fg);
-      border: 1px solid var(--border); border-radius: 7px;
-      padding: 8px 10px; font-size: 13px; font-family: inherit;
-    }
-    input:focus, textarea:focus, select:focus {
-      outline: none; border-color: var(--primary);
-    }
-    pre {
-      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-      padding: 8px; overflow-x: auto; font-size: 11px; margin: 6px 0;
-      font-family: ui-monospace, SFMono-Regular, monospace;
-    }
-
-    /* Layout Grid */
-    main {
-      display: grid;
-      grid-template-columns: 330px 1fr 370px;
-      gap: 14px;
-      padding: 14px 18px;
-      max-width: 1560px;
-      margin: 0 auto;
-    }
-    .panel {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 11px;
-      padding: 14px;
-      margin-bottom: 14px;
-    }
-    h2 {
-      margin: 0 0 10px;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: .05em;
-      color: var(--muted);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-    }
-    .row {
-      padding: 10px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      margin-bottom: 8px;
-      background: rgba(255,255,255,.02);
-    }
-    .row.active { border-color: var(--primary); background: rgba(88,166,255,.07); }
-    .row.subrun {
-      margin-left: 18px;
-      border-left: 3px solid var(--purple);
-      background: rgba(188,140,255,.04);
-    }
-
-    .flex { display: flex; gap: 6px; align-items: center; }
-    .wrap { flex-wrap: wrap; }
-    .between { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-    .muted { color: var(--muted); font-size: 12px; }
-    .mono { font-family: ui-monospace, SFMono-Regular, monospace; }
-
-    /* Multi-Agent Dialogue Bubbles */
-    .dialogue-box {
-      max-height: 410px;
-      overflow-y: auto;
-      padding-right: 4px;
-      margin-bottom: 10px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .msg-card {
-      padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: var(--bg-elev);
-    }
-    .msg-card.human {
-      border-color: rgba(63, 185, 80, 0.4);
-      background: rgba(63, 185, 80, 0.06);
-    }
-    .msg-card.agy {
-      border-color: rgba(88, 166, 255, 0.4);
-      background: rgba(88, 166, 255, 0.06);
-    }
-    .msg-card.muse {
-      border-color: rgba(188, 140, 255, 0.4);
-      background: rgba(188, 140, 255, 0.06);
-    }
-    .msg-card.subagent {
-      border-left: 3px solid var(--warning);
-      background: rgba(210, 153, 34, 0.06);
-    }
-    .mention-tag {
-      display: inline-block;
-      padding: 0 5px;
-      border-radius: 4px;
-      background: rgba(88, 166, 255, 0.18);
-      color: var(--primary);
-      font-weight: 600;
-      font-family: ui-monospace, monospace;
-      font-size: 11.5px;
-    }
-    .artifact-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 5px 10px;
-      border-radius: 7px;
-      border: 1px solid rgba(88, 166, 255, 0.35);
-      background: rgba(88, 166, 255, 0.1);
-      color: var(--fg);
-      font-size: 12px;
-      margin-top: 4px;
-      margin-right: 6px;
-      text-decoration: none;
-    }
-    .artifact-chip.gdoc {
-      border-color: rgba(188, 140, 255, 0.45);
-      background: rgba(188, 140, 255, 0.12);
-    }
-    .artifact-chip.pr {
-      border-color: rgba(63, 185, 80, 0.45);
-      background: rgba(63, 185, 80, 0.12);
-    }
-
-    /* 14-Run Health Strip */
-    .flow-strip {
-      display: inline-flex;
-      gap: 3px;
-      align-items: center;
-    }
-    .flow-dot {
-      width: 8px;
-      height: 14px;
-      border-radius: 2px;
-      background: #252e3f;
-    }
-    .flow-dot.done { background: var(--success); }
-    .flow-dot.running, .flow-dot.planning { background: var(--primary); }
-    .flow-dot.gated { background: var(--warning); }
-    .flow-dot.stalled, .flow-dot.failed, .flow-dot.overridden { background: var(--error); }
-
-    /* Modals */
-    .modal-backdrop {
-      position: fixed;
-      inset: 0;
-      z-index: 100;
-      background: rgba(5, 7, 11, 0.78);
-      backdrop-filter: blur(4px);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 16px;
-    }
+    .modal-backdrop { display: none; }
     .modal-backdrop.open { display: flex; }
-    .modal {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      max-width: 560px;
-      width: 100%;
-      max-height: 90vh;
-      overflow-y: auto;
-      padding: 18px;
-      box-shadow: 0 20px 50px rgba(0,0,0,0.6);
-    }
 
-    /* Mobile Bottom Navigation */
-    .mobile-nav {
-      display: none;
-      position: fixed;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      z-index: 50;
-      background: rgba(17, 22, 32, 0.98);
-      border-top: 1px solid var(--border);
-      padding: 6px 8px;
-      justify-content: space-around;
-    }
-    .mobile-nav button {
-      flex: 1;
-      background: transparent;
-      border: none;
-      flex-direction: column;
-      gap: 2px;
-      padding: 6px 4px;
-      font-size: 11px;
-      color: var(--muted);
-      border-radius: 8px;
-    }
-    .mobile-nav button.active {
-      color: var(--primary);
-      background: rgba(88, 166, 255, 0.12);
-      font-weight: 700;
-    }
-
-    @media (max-width: 1024px) {
-      main { grid-template-columns: 1fr; padding: 10px 12px; }
-    }
     @media (max-width: 768px) {
-      .mobile-nav { display: flex; }
-      [data-mobile-section] { display: none; }
-      [data-mobile-section].mobile-active { display: block; }
-      header { padding: 8px 12px; }
+      body { padding: 10px !important; }
+      .mobile-hide-sidebar { display: none; }
+      .mobile-show-sidebar { display: flex !important; }
+      .mobile-hide-main { display: none !important; }
+      .chat-height-mobile { max-height: calc(100dvh - 235px) !important; min-height: 360px !important; }
     }
   </style>
 </head>
-<body>
-  <header>
-    <div class="brand">
-      <div class="logo">R</div>
-      <div>
-        <div class="flex">
-          <span>Ripple</span>
-          <span class="pill pri">Runs with Gates</span>
-          <span id="sse-status" class="pill">connecting...</span>
-        </div>
-        <div id="public-url-banner" class="muted mono" style="font-size:11px;"></div>
-      </div>
-    </div>
+<body class="bg-[#f3f3f0] min-h-screen text-slate-800 font-sans antialiased flex flex-col justify-between p-4 md:p-6 lg:p-8">
 
-    <!-- "See Myself" Human Identity & Quick Controls -->
-    <div class="identity-bar">
-      <div class="me-chip" id="whoami-chip" title="Your live workspace identity">
-        <span class="avatar-dot" id="whoami-avatar">D</span>
+  <!-- BEGIN: TopGlobalNavigation -->
+  <header class="max-w-7xl w-full mx-auto mb-4 md:mb-5">
+    <div class="bg-white rounded-2xl md:rounded-full px-4 md:px-5 py-2.5 md:py-3 flex items-center justify-between shadow-soft border border-neutral-100">
+      <!-- Brand Logo -->
+      <div class="flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-xl bg-orange-100/90 text-brand-coral font-bold text-lg flex items-center justify-center shadow-sm">
+          R
+        </div>
         <div>
-          <div style="font-weight:700; line-height:1.1;" id="whoami-name">David (@dweidai)</div>
-          <div class="muted" style="font-size:10px;" id="whoami-roles">you · lead · reviewer</div>
+          <span class="font-semibold text-lg text-slate-900 tracking-tight">Ripple</span>
+          <span class="hidden sm:inline-block ml-1.5 text-[11px] font-medium text-slate-400">Workspace</span>
         </div>
-        <span class="online-dot" title="Online in workspace"></span>
       </div>
 
-      <button class="sm" onclick="openProfileModal()">✏️ Profile</button>
-      <button class="sm primary" onclick="openInviteModal()">+ Invite Agent</button>
-      <button class="sm" onclick="openPhoneShareModal()">📱 Phone Link</button>
+      <!-- Global Center Search Bar -->
+      <div class="hidden md:flex items-center flex-1 max-w-md mx-6">
+        <div class="relative w-full">
+          <span class="absolute inset-y-0 left-0 flex items-center pl-3.5 pointer-events-none text-slate-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+            </svg>
+          </span>
+          <input id="global-search" oninput="renderAll()" class="w-full bg-slate-50 border-none rounded-full pl-10 pr-4 py-2 text-sm text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-orange-200" placeholder="Search conversations, agents, tasks..." type="text" />
+        </div>
+      </div>
 
-      <select id="actor-switcher" onchange="switchActorView(this.value)" style="width:auto; padding:4px 8px; font-size:11.5px;" title="Switch active token/view">
-        <option value="rpl_human_dev_token">View as: David (@dweidai)</option>
-        <option value="rpl_agy_dev_token">View as: Antigravity (@agy)</option>
-        <option value="rpl_muse_dev_token">View as: Muse (@muse)</option>
-      </select>
+      <!-- Global Header Actions -->
+      <div class="flex items-center space-x-2.5 sm:space-x-3">
+        <button onclick="toggleMobileSidebar()" class="lg:hidden px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-full border border-slate-200/70 transition">
+          Agents
+        </button>
+
+        <button onclick="openInviteModal()" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-3.5 py-2 rounded-full flex items-center space-x-1.5 shadow-btn transition">
+          <span>+</span>
+          <span>Invite</span>
+        </button>
+
+        <!-- Current User Avatar -->
+        <div class="flex items-center pl-1" title="David Wei Dai (You)">
+          <div class="relative w-9 h-9 rounded-full ring-2 ring-slate-100 bg-amber-100 flex items-center justify-center font-semibold text-amber-800 text-xs">
+            <span id="user-initials">DD</span>
+            <span class="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-white"></span>
+          </div>
+        </div>
+      </div>
     </div>
   </header>
+  <!-- END: TopGlobalNavigation -->
 
-  <main>
-    <!-- COLUMN 1: Participants & Invite + Backlog & Tasks + Flow Lane -->
-    <section id="col-left">
-      <!-- Agents & Participants Roster -->
-      <div class="panel" data-mobile-section="agents">
-        <h2>
-          <span>Workspace Roster & Agents</span>
-          <button class="sm primary" onclick="openInviteModal()">+ Invite Agy / Muse</button>
-        </h2>
-        <div id="agents-list"></div>
-      </div>
+  <!-- BEGIN: MainContentGrid -->
+  <main class="max-w-7xl w-full mx-auto flex-1 grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
 
-      <!-- Backlog & Tasks Board -->
-      <div class="panel" data-mobile-section="backlog">
-        <h2>
-          <span>Backlog & Tasks <span id="items-count" class="pill">0</span></span>
-          <button class="sm primary" onclick="openTaskModal()">+ New Task</button>
-        </h2>
-        <div class="flex wrap" style="margin-bottom:10px;" id="backlog-filters">
-          <button class="sm primary" onclick="setBacklogFilter('all')">All</button>
-          <button class="sm" onclick="setBacklogFilter('you')">My Tasks (@you)</button>
-          <button class="sm" onclick="setBacklogFilter('agy')">Antigravity (@agy)</button>
-          <button class="sm" onclick="setBacklogFilter('muse')">Muse (@muse)</button>
-          <button class="sm" onclick="setBacklogFilter('done')">Done</button>
+    <!-- BEGIN: LeftSidebar (Messages & Agents) -->
+    <aside id="left-sidebar" class="mobile-hide-sidebar lg:flex lg:col-span-4 bg-white rounded-3xl p-5 shadow-soft border border-neutral-100/80 flex-col justify-between">
+      <div>
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-xl font-bold tracking-tight text-slate-900">Messages</h2>
+          <button onclick="toggleMobileSidebar(false)" class="lg:hidden text-xs text-slate-400 hover:text-slate-700 px-2 py-1 rounded-lg">Done</button>
         </div>
-        <div id="items-list"></div>
+
+        <!-- Filter Tabs -->
+        <div class="flex items-center space-x-5 text-sm font-medium border-b border-slate-100 pb-3 mb-4 overflow-x-auto no-scrollbar">
+          <button onclick="switchTab('chat')" id="side-tab-chat" class="side-tab text-brand-coral relative pb-1 whitespace-nowrap">
+            Dialogue
+            <span class="side-tab-bar absolute bottom-0 left-0 w-full h-[2px] bg-brand-coral rounded-full"></span>
+          </button>
+          <button onclick="switchTab('tasks')" id="side-tab-tasks" class="side-tab text-slate-400 hover:text-slate-600 relative pb-1 whitespace-nowrap transition flex items-center gap-1.5">
+            <span>Backlog</span>
+            <span id="side-tasks-badge" class="hidden text-[10px] bg-orange-100 text-brand-coral font-semibold px-1.5 py-0.2 rounded-full">0</span>
+          </button>
+          <button onclick="switchTab('runs')" id="side-tab-runs" class="side-tab text-slate-400 hover:text-slate-600 relative pb-1 whitespace-nowrap transition flex items-center gap-1.5">
+            <span>Decisions</span>
+            <span id="side-cards-badge" class="hidden text-[10px] bg-brand-coral text-white font-semibold px-1.5 py-0.2 rounded-full">0</span>
+          </button>
+        </div>
+
+        <!-- Invite Agent CTA Banner -->
+        <div class="mb-4">
+          <button onclick="openInviteModal()" class="w-full bg-gradient-to-r from-orange-400 to-brand-coral hover:opacity-95 text-white font-medium py-3 px-4 rounded-2xl flex items-center justify-center space-x-2 shadow-btn transition">
+            <svg class="w-4 h-4 fill-current text-orange-100" viewBox="0 0 24 24">
+              <path d="M12 2L9.5 8.5L3 11L9.5 13.5L12 20L14.5 13.5L21 11L14.5 8.5L12 2Z"></path>
+            </svg>
+            <span class="text-sm">Invite Antigravity or Muse</span>
+          </button>
+        </div>
+
+        <!-- Threads & Agents List -->
+        <div id="sidebar-roster" class="space-y-1.5 overflow-y-auto max-h-[470px] pr-1">
+          <!-- Populated dynamically -->
+        </div>
       </div>
 
-      <!-- Flow Lane with 14-Run Health Strip -->
-      <div class="panel" data-mobile-section="runs">
-        <h2>Flow Lane <span id="flows-count" class="pill">0</span></h2>
-        <div id="flows-list"></div>
+      <!-- Sidebar Footer -->
+      <div class="pt-4 border-t border-slate-100 mt-3 flex items-center justify-between text-xs text-slate-400 px-1">
+        <span class="flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
+          All agents operational
+        </span>
+        <span id="sidebar-agent-count" class="font-medium text-slate-500">Live</span>
       </div>
+    </aside>
+    <!-- END: LeftSidebar -->
+
+    <!-- BEGIN: MainChatArea -->
+    <section id="main-area" class="lg:col-span-8 bg-white rounded-3xl p-4 sm:p-6 shadow-soft border border-neutral-100/80 flex flex-col justify-between">
+
+      <!-- Chat Header -->
+      <div class="pb-3.5 border-b border-slate-100 flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <div class="flex items-center space-x-2">
+            <h1 class="text-lg font-bold text-slate-900"># main</h1>
+            <span class="px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-orange-100/80 text-brand-coral flex items-center space-x-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-brand-coral animate-pulse"></span>
+              <span>Live</span>
+            </span>
+          </div>
+          <p id="header-presence" class="text-xs text-slate-400 mt-0.5">Connecting workspace...</p>
+        </div>
+
+        <!-- Clean Pill View Switcher -->
+        <div class="flex items-center bg-slate-50 p-1 rounded-full border border-slate-100 text-xs font-medium">
+          <button onclick="switchTab('chat')" id="pill-tab-chat" class="pill-tab px-3 py-1.5 rounded-full bg-white text-slate-900 shadow-sm transition">Chat</button>
+          <button onclick="switchTab('tasks')" id="pill-tab-tasks" class="pill-tab px-3 py-1.5 rounded-full text-slate-500 hover:text-slate-800 transition flex items-center gap-1">
+            <span>Backlog</span>
+            <span id="tasks-badge" class="hidden text-[10px] bg-orange-100 text-brand-coral px-1.5 rounded-full font-semibold">0</span>
+          </button>
+          <button onclick="switchTab('runs')" id="pill-tab-runs" class="pill-tab px-3 py-1.5 rounded-full text-slate-500 hover:text-slate-800 transition flex items-center gap-1">
+            <span>Decisions</span>
+            <span id="cards-badge" class="hidden text-[10px] bg-brand-coral text-white px-1.5 rounded-full font-semibold">0</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- VIEW 1: CHAT STREAM -->
+      <div id="view-chat" class="view-pane active flex-1 flex-col justify-between min-h-0">
+        <div id="chat-stream" class="chat-height-mobile flex-1 overflow-y-auto py-5 space-y-5 max-h-[540px] pr-1.5">
+          <!-- Messages rendered here -->
+        </div>
+
+        <!-- Bottom Pill Input Bar -->
+        <div class="pt-3">
+          <form onsubmit="handleSendChat(event)" class="relative flex items-center bg-slate-50 border border-slate-200/80 rounded-full px-2.5 py-1.5 shadow-sm hover:border-slate-300 focus-within:border-brand-coral focus-within:ring-2 focus-within:ring-orange-100 transition">
+            <button type="button" onclick="insertTag('@agy ')" title="Mention Antigravity" class="px-2.5 py-1.5 text-xs font-semibold text-slate-500 hover:text-brand-coral hover:bg-orange-50 rounded-full transition">
+              @agy
+            </button>
+            <button type="button" onclick="insertTag('@muse ')" title="Mention Muse" class="px-2.5 py-1.5 text-xs font-semibold text-slate-500 hover:text-brand-coral hover:bg-orange-50 rounded-full transition">
+              @muse
+            </button>
+            <input id="chat-input" class="flex-1 bg-transparent border-none text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-0 px-3 py-2 min-w-0" placeholder="Message #main, @agy, or @muse..." type="text" autocomplete="off" />
+            <button aria-label="Send message" class="w-10 h-10 bg-brand-coral hover:bg-brand-coralHover text-white rounded-full flex items-center justify-center shadow-btn transition flex-shrink-0" type="submit">
+              <svg class="w-4 h-4 fill-current transform rotate-45 -mr-0.5" viewBox="0 0 24 24">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+              </svg>
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <!-- VIEW 2: BACKLOG -->
+      <div id="view-tasks" class="view-pane flex-1 flex-col py-4 overflow-y-auto max-h-[600px]">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-base font-bold text-slate-900">Shared Backlog</h2>
+          <button onclick="toggleNewTaskInput()" class="bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold px-3.5 py-1.5 rounded-full transition">
+            + New Task
+          </button>
+        </div>
+
+        <div id="new-task-box" class="hidden mb-4 p-3 bg-slate-50 rounded-2xl border border-slate-200/80">
+          <div class="flex gap-2">
+            <input id="new-task-title-input" type="text" placeholder="What needs to be done?" class="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-200" onkeydown="if(event.key==='Enter') submitNewTask()" />
+            <button onclick="submitNewTask()" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-4 py-2 rounded-xl transition">Add</button>
+          </div>
+        </div>
+
+        <div id="task-list" class="space-y-2.5">
+          <!-- Tasks rendered here -->
+        </div>
+      </div>
+
+      <!-- VIEW 3: DECISIONS & RUNS -->
+      <div id="view-runs" class="view-pane flex-1 flex-col py-4 overflow-y-auto max-h-[600px]">
+        <div class="mb-4">
+          <h2 class="text-base font-bold text-slate-900">Decisions &amp; Active Runs</h2>
+          <p class="text-xs text-slate-400">Approve agent gates or track live sub-agent execution.</p>
+        </div>
+        <div id="runs-cards-list" class="space-y-3 mb-5"></div>
+        <div id="runs-list" class="space-y-3"></div>
+      </div>
+
     </section>
-
-    <!-- COLUMN 2: Multi-Agent Dialogue Room + Hierarchical Runs & Sub-Agents -->
-    <section id="col-center">
-      <!-- Multi-Agent Workspace Dialogue Room -->
-      <div class="panel mobile-active" data-mobile-section="dialogue">
-        <div class="between wrap" style="margin-bottom:10px;">
-          <h2 style="margin:0;">
-            <span>💬 Multi-Agent Dialogue</span>
-            <span id="dialogue-scope-pill" class="pill pri">#workspace / main</span>
-          </h2>
-          <div class="flex wrap">
-            <button class="sm" id="btn-scope-ws" onclick="setDialogueScope('workspace')">Workspace (#main)</button>
-            <button class="sm" id="btn-scope-run" onclick="setDialogueScope('run')">Selected Run Thread</button>
-          </div>
-        </div>
-
-        <!-- One-Tap Multi-Agent & Sub-Agent Prompt Chips -->
-        <div class="flex wrap" style="margin-bottom:10px;">
-          <button class="sm purple" onclick="triggerFullMultiAgentWorkflow()">🚀 Have Agy & Muse sync backlog + spin sub-agents for Drive & PR</button>
-          <button class="sm" onclick="insertMention('@agy ')">@agy</button>
-          <button class="sm" onclick="insertMention('@muse ')">@muse</button>
-          <button class="sm" onclick="insertMention('@all ')">@all</button>
-        </div>
-
-        <div id="dialogue-list" class="dialogue-box"></div>
-
-        <form onsubmit="postDialogueMessage(event)">
-          <div class="flex" style="gap:8px;">
-            <input id="dialogue-input" placeholder="Message @agy, @muse, or @all (e.g. 'Sync backlog, draft Drive spec, and open a PR')..." autocomplete="off" />
-            <button type="submit" class="primary">Send</button>
-          </div>
-          <div class="between" style="margin-top:6px;">
-            <label class="muted flex" style="cursor:pointer;">
-              <input id="dialogue-steer" type="checkbox" style="width:auto;" />
-              Send as mid-flight steer to active run
-            </label>
-            <span class="muted" style="font-size:11px;">Anti-loop guard: max 3 auto agent hops</span>
-          </div>
-        </form>
-      </div>
-
-      <!-- Hierarchical Runs & Sub-Agents Timeline -->
-      <div class="panel" data-mobile-section="runs">
-        <div class="between wrap" style="margin-bottom:10px;">
-          <h2 style="margin:0;">⚡ Live Runs & Sub-Agent Tree <span id="runs-count" class="pill">0 runs</span></h2>
-          <div class="flex wrap">
-            <button class="sm primary" onclick="openSpawnSubrunModal('github_pr')">+ Spawn GitHub PR Sub-Agent</button>
-            <button class="sm purple" onclick="openSpawnSubrunModal('drive_doc')">+ Spawn Drive/Docs Sub-Agent</button>
-          </div>
-        </div>
-
-        <div id="run-tree-selector" class="flex wrap" style="margin-bottom:10px;"></div>
-        <div id="run-detail" class="muted">Select a run or trigger an agent task.</div>
-      </div>
-
-      <!-- Protocol Event Log (SSE) -->
-      <div class="panel" data-mobile-section="runs">
-        <h2>Protocol Event Log (SSE) <span class="pill">monotonic seq</span></h2>
-        <div id="events-list" style="max-height:180px; overflow-y:auto; font-family:ui-monospace,monospace; font-size:11px;"></div>
-      </div>
-    </section>
-
-    <!-- COLUMN 3: Decisions Tray + Recent PR & Drive Artifacts -->
-    <section id="col-right">
-      <div class="panel" data-mobile-section="decisions">
-        <h2>🔔 Decisions Tray (Pin-Bound Gates) <span id="open-cards-pill" class="pill warn">0 open</span></h2>
-        <div id="cards-list" class="muted">No Decision Cards yet.</div>
-      </div>
-
-      <div class="panel" data-mobile-section="decisions">
-        <h2>🔗 Sub-Agent Deliverables (GitHub PRs & Google Drive/Docs)</h2>
-        <div id="artifacts-gallery" class="muted">No PR or Drive artifacts attached yet.</div>
-      </div>
-    </section>
+    <!-- END: MainChatArea -->
   </main>
+  <!-- END: MainContentGrid -->
 
-  <!-- Mobile Touch Bottom Navigation Bar -->
-  <nav class="mobile-nav">
-    <button id="mnav-dialogue" class="active" onclick="switchMobileTab('dialogue')">
-      <span>💬</span><span>Dialogue</span>
-    </button>
-    <button id="mnav-runs" onclick="switchMobileTab('runs')">
-      <span>⚡</span><span>Runs & Subs</span>
-    </button>
-    <button id="mnav-backlog" onclick="switchMobileTab('backlog')">
-      <span>📋</span><span>Backlog</span>
-    </button>
-    <button id="mnav-decisions" onclick="switchMobileTab('decisions')">
-      <span>🔔</span><span id="mnav-decisions-label">Decisions</span>
-    </button>
-    <button id="mnav-agents" onclick="switchMobileTab('agents')">
-      <span>🤖</span><span>Invite</span>
-    </button>
-  </nav>
-
-  <!-- MODAL 1: Self-Service Invite Agent (Antigravity, Muse, Sub-Agent, Custom) -->
-  <div id="modal-invite" class="modal-backdrop">
-    <div class="modal">
-      <div class="between" style="margin-bottom:12px;">
-        <h2 style="margin:0; font-size:14px; color:var(--fg);">🤖 Invite Agent to Hosted Workspace</h2>
-        <button class="sm" onclick="closeModal('modal-invite')">✕</button>
+  <!-- MODAL: Self-Service Invite Agent -->
+  <div id="invite-modal" class="modal-backdrop fixed inset-0 z-50 bg-slate-900/30 backdrop-blur-sm items-center justify-center p-4">
+    <div class="bg-white rounded-3xl max-w-lg w-full shadow-soft border border-neutral-100 overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-bold text-slate-900">Invite an Agent to Ripple</h2>
+          <p class="text-xs text-slate-400">Copy this prompt and send it to your agent — it will connect itself.</p>
+        </div>
+        <button onclick="closeInviteModal()" class="w-8 h-8 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 flex items-center justify-center transition">✕</button>
       </div>
-      <div class="muted" style="margin-bottom:10px;">
-        Select a preset to invite or rotate credentials for your **Antigravity (`@agy`)** agent, **Muse (`@muse`)** agent, or a sub-agent. Both `@agy` and `@muse` are wired to the live workspace bridge with `gh`, `gdrive`, and `gdocs` capabilities.
+
+      <div class="p-6 space-y-4">
+        <div class="flex flex-wrap gap-2">
+          <button class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-brand-coral text-white transition" onclick="selectPreset('agy', this)">Antigravity (@agy)</button>
+          <button class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" onclick="selectPreset('muse', this)">Muse (@muse)</button>
+          <button class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" onclick="selectPreset('openclaw', this)">OpenClaw</button>
+          <button class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" onclick="selectPreset('grok', this)">Grok</button>
+          <button class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" onclick="selectPreset('custom', this)">Custom</button>
+        </div>
+
+        <pre id="prompt-preview" class="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 text-[11px] leading-relaxed text-slate-700 overflow-x-auto max-h-60 whitespace-pre-wrap font-mono"></pre>
+
+        <div class="text-[11px] text-slate-400 flex items-center justify-between">
+          <span>MCP Endpoint: <code id="mcp-preview-url" class="text-slate-600"></code></span>
+        </div>
       </div>
-      <div class="flex wrap" style="margin-bottom:12px;">
-        <button class="primary" onclick="selectInvitePreset('agy')">⚡ Antigravity (@agy)</button>
-        <button class="purple" onclick="selectInvitePreset('muse')">💡 Muse (@muse)</button>
-        <button onclick="selectInvitePreset('subagent')">🌿 Sub-Agent</button>
-        <button onclick="selectInvitePreset('custom')">➕ Custom Agent</button>
-      </div>
-      <form onsubmit="submitInviteAgent(event)">
-        <div class="flex" style="gap:8px; margin-bottom:8px;">
-          <div style="flex:1;">
-            <label class="muted">Actor Handle (ID)</label>
-            <input id="invite-actor-id" value="agy" required />
-          </div>
-          <div style="flex:1.4;">
-            <label class="muted">Display Name</label>
-            <input id="invite-actor-name" value="Antigravity (@agy)" required />
-          </div>
-        </div>
-        <div style="margin-bottom:10px;">
-          <label class="muted">Role & Capabilities Bio</label>
-          <input id="invite-actor-bio" value="Lead Engineering & Architecture Agent · Spawns GitHub PR sub-agents" />
-        </div>
-        <div class="between" style="margin-bottom:12px;">
-          <label class="muted flex"><input type="checkbox" id="invite-announce" checked style="width:auto;" /> Announce join in Workspace Dialogue</label>
-          <button type="submit" class="primary">Mint / Connect Agent</button>
-        </div>
-      </form>
 
-      <div id="invite-result" style="display:none; border-top:1px solid var(--border); padding-top:12px;">
-        <div class="between" style="margin-bottom:6px;">
-          <span class="pill ok">✓ Active & Listening via Bridge</span>
-          <code id="invite-raw-token" class="mono" style="font-size:11px; color:var(--primary);"></code>
-        </div>
-        <div class="muted" style="margin-top:8px;">1. Remote MCP Config JSON (<code>/mcp</code>):</div>
-        <pre id="invite-mcp-json"></pre>
-        <button class="sm" onclick="copyText('invite-mcp-json')">📋 Copy MCP Config</button>
-
-        <div class="muted" style="margin-top:8px;">2. Agent Doorway Prompt (paste into Antigravity or Muse):</div>
-        <pre id="invite-doorway-prompt" style="white-space:pre-wrap;"></pre>
-        <button class="sm" onclick="copyText('invite-doorway-prompt')">📋 Copy Doorway Prompt</button>
-
-        <div class="muted" style="margin-top:8px;">3. CLI Command:</div>
-        <pre id="invite-cli-cmd"></pre>
-        <button class="sm" onclick="copyText('invite-cli-cmd')">📋 Copy CLI Command</button>
+      <div class="px-6 py-4 bg-slate-50/70 border-t border-slate-100 flex justify-end gap-2">
+        <button onclick="closeInviteModal()" class="px-4 py-2 rounded-full text-xs font-medium text-slate-600 hover:bg-slate-100 transition">Close</button>
+        <button onclick="copyAgentPrompt()" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-5 py-2 rounded-full shadow-btn transition">
+          <span id="btn-copy-text">Copy Prompt for Agent</span>
+        </button>
       </div>
     </div>
   </div>
 
-  <!-- MODAL 2: Edit My Profile ("See Myself") -->
-  <div id="modal-profile" class="modal-backdrop">
-    <div class="modal">
-      <div class="between" style="margin-bottom:12px;">
-        <h2 style="margin:0; font-size:14px; color:var(--fg);">👤 My Workspace Profile ("See Myself")</h2>
-        <button class="sm" onclick="closeModal('modal-profile')">✕</button>
+  <!-- MODAL: Sign In (shown only if unauthenticated) -->
+  <div id="auth-modal" class="modal-backdrop fixed inset-0 z-50 bg-slate-900/30 backdrop-blur-sm items-center justify-center p-4">
+    <div class="bg-white rounded-3xl max-w-md w-full shadow-soft border border-neutral-100 p-6 space-y-4">
+      <div>
+        <h2 class="text-base font-bold text-slate-900">Sign in to Ripple</h2>
+        <p class="text-xs text-slate-400 mt-1">Paste your workspace access token to continue.</p>
       </div>
-      <form onsubmit="submitProfileUpdate(event)">
-        <div style="margin-bottom:10px;">
-          <label class="muted">Your Display Name</label>
-          <input id="profile-name" placeholder="David (@dweidai)" required />
-        </div>
-        <div style="margin-bottom:10px;">
-          <label class="muted">Live Status Text</label>
-          <input id="profile-status" placeholder="Online · Reviewing from phone" />
-        </div>
-        <div style="margin-bottom:12px;">
-          <label class="muted">Bio / Role Note</label>
-          <input id="profile-bio" placeholder="Workspace Lead & Reviewer (@dweidai)" />
-        </div>
-        <div style="margin-bottom:12px; border-top:1px solid var(--border); padding-top:10px;">
-          <label class="muted">Active Bearer Token (stored in browser & URL share link)</label>
-          <div class="flex" style="margin-top:4px;">
-            <input id="token-input" type="text" />
-            <button type="button" onclick="saveToken()">Switch Token</button>
-          </div>
-        </div>
-        <div class="between">
-          <button type="button" onclick="closeModal('modal-profile')">Cancel</button>
-          <button type="submit" class="primary">Save Profile</button>
-        </div>
-      </form>
+      <input id="auth-token-input" type="password" placeholder="rpl_human_..." class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-200" onkeydown="if(event.key==='Enter') submitAuthToken()" />
+      <div class="flex justify-end">
+        <button onclick="submitAuthToken()" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-5 py-2.5 rounded-full shadow-btn transition">Connect</button>
+      </div>
     </div>
   </div>
 
-  <!-- MODAL 3: Create / Edit Backlog Task -->
-  <div id="modal-task" class="modal-backdrop">
-    <div class="modal">
-      <div class="between" style="margin-bottom:12px;">
-        <h2 id="task-modal-title" style="margin:0; font-size:14px; color:var(--fg);">📋 Create Backlog Task</h2>
-        <button class="sm" onclick="closeModal('modal-task')">✕</button>
-      </div>
-      <form onsubmit="submitTaskModal(event)">
-        <input type="hidden" id="task-edit-id" value="" />
-        <div style="margin-bottom:8px;">
-          <label class="muted">Task Title</label>
-          <input id="task-title" placeholder="e.g. Draft Drive Spec & Open GitHub PR" required />
-        </div>
-        <div style="margin-bottom:8px;">
-          <label class="muted">Details / Acceptance Criteria</label>
-          <textarea id="task-body" rows="3" placeholder="Context for yourself, Antigravity (@agy), or Muse (@muse)..."></textarea>
-        </div>
-        <div class="flex" style="gap:8px; margin-bottom:8px;">
-          <div style="flex:1;">
-            <label class="muted">Priority</label>
-            <select id="task-priority">
-              <option value="P0">P0 (Critical)</option>
-              <option value="P1" selected>P1 (High)</option>
-              <option value="P2">P2 (Normal)</option>
-            </select>
-          </div>
-          <div style="flex:1;">
-            <label class="muted">Assignee</label>
-            <select id="task-assignee">
-              <option value="you">David (@you)</option>
-              <option value="agy">Antigravity (@agy)</option>
-              <option value="muse">Muse (@muse)</option>
-              <option value="agy-sub-github">agy-sub-github</option>
-              <option value="muse-sub-drive">muse-sub-drive</option>
-            </select>
-          </div>
-        </div>
-        <div style="margin-bottom:12px;">
-          <label class="muted">Tags (comma-separated)</label>
-          <input id="task-tags" placeholder="github, pr, drive, spec" />
-        </div>
-        <div class="between">
-          <button type="button" onclick="closeModal('modal-task')">Cancel</button>
-          <button type="submit" class="primary">Save Task</button>
-        </div>
-      </form>
-    </div>
-  </div>
-
-  <!-- MODAL 4: Mid-Flight Steer Modal (Zero browser prompt/confirm) -->
-  <div id="modal-steer" class="modal-backdrop">
-    <div class="modal">
-      <div class="between" style="margin-bottom:12px;">
-        <h2 style="margin:0; font-size:14px; color:var(--fg);">🎯 Queue Mid-Flight Steer</h2>
-        <button class="sm" onclick="closeModal('modal-steer')">✕</button>
-      </div>
-      <form onsubmit="submitSteerModal(event)">
-        <input type="hidden" id="steer-run-id" />
-        <input type="hidden" id="steer-step-idx" />
-        <div style="margin-bottom:8px;">
-          <label class="muted" id="steer-target-label">Steering Run</label>
-          <input id="steer-title" placeholder="New instruction or step directive..." required />
-        </div>
-        <div style="margin-bottom:12px;">
-          <label class="muted">Delivery Urgency</label>
-          <select id="steer-urgency">
-            <option value="normal">Normal — Deliver at next step checkpoint</option>
-            <option value="now">Urgent (now) — Deliver on next heartbeat (&lt;=60s)</option>
-          </select>
-        </div>
-        <div class="between">
-          <button type="button" onclick="closeModal('modal-steer')">Cancel</button>
-          <button type="submit" class="primary">Queue Steer</button>
-        </div>
-      </form>
-    </div>
-  </div>
-
-  <!-- MODAL 5: Spawn Sub-Agent Modal (GitHub PR or Google Drive/Docs) -->
-  <div id="modal-subrun" class="modal-backdrop">
-    <div class="modal">
-      <div class="between" style="margin-bottom:12px;">
-        <h2 style="margin:0; font-size:14px; color:var(--fg);">🌿 Spawn Sub-Agent Run</h2>
-        <button class="sm" onclick="closeModal('modal-subrun')">✕</button>
-      </div>
-      <form onsubmit="submitSpawnSubrun(event)">
-        <div style="margin-bottom:8px;">
-          <label class="muted">Parent Run</label>
-          <select id="subrun-parent-id"></select>
-        </div>
-        <div style="margin-bottom:8px;">
-          <label class="muted">Sub-Agent Capability / Tool Execution</label>
-          <select id="subrun-tool" onchange="onSubrunToolChange(this.value)">
-            <option value="github_pr">🔀 Real GitHub Branch, Commit & PR via gh CLI (agy-sub-github)</option>
-            <option value="drive_doc">📄 Real Google Doc Spec & Drive Index via gdocs/gdrive CLI (muse-sub-drive)</option>
-            <option value="">⚙️ Custom Sub-Agent Run</option>
-          </select>
-        </div>
-        <div style="margin-bottom:8px;">
-          <label class="muted">Sub-Agent Task Title</label>
-          <input id="subrun-title" value="Ship Sub-Agent Architecture Spec & PR" required />
-        </div>
-        <div style="margin-bottom:12px;">
-          <label class="muted">Goal / Context</label>
-          <textarea id="subrun-goal" rows="2">Execute sub-agent deliverable and report artifact URLs back to parent run and workspace dialogue.</textarea>
-        </div>
-        <div class="between">
-          <button type="button" onclick="closeModal('modal-subrun')">Cancel</button>
-          <button type="submit" class="primary" id="subrun-submit-btn">Spawn & Execute Sub-Agent</button>
-        </div>
-      </form>
-    </div>
-  </div>
-
-  <!-- MODAL 6: Phone Auto-Login Link & Share -->
-  <div id="modal-phone" class="modal-backdrop">
-    <div class="modal">
-      <div class="between" style="margin-bottom:12px;">
-        <h2 style="margin:0; font-size:14px; color:var(--fg);">📱 Open on Your Phone (Auto-Login Link)</h2>
-        <button class="sm" onclick="closeModal('modal-phone')">✕</button>
-      </div>
-      <div class="muted" style="margin-bottom:8px;">
-        Open this public HTTPS URL on your phone browser. It automatically signs you in as <strong id="phone-actor-label">David (@dweidai)</strong>:
-      </div>
-      <pre id="phone-magic-url" style="white-space:pre-wrap; word-break:break-all; font-size:12px; color:var(--primary);"></pre>
-      <div class="flex wrap" style="margin-top:10px;">
-        <button class="primary" onclick="copyText('phone-magic-url')">📋 Copy Magic Phone Link</button>
-        <button onclick="closeModal('modal-phone')">Done</button>
-      </div>
-    </div>
-  </div>
+  <!-- Toast -->
+  <div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs font-medium px-4 py-2.5 rounded-full shadow-lg z-50"></div>
 
   <script>
-    // 1. Phone URL ?token= auto-login support
     const urlParams = new URLSearchParams(window.location.search);
-    const urlToken = urlParams.get('token');
-    if (urlToken) {
-      localStorage.setItem('ripple_token', urlToken);
+    const queryTok = urlParams.get('token');
+    if (queryTok) {
+      localStorage.setItem('ripple_token', queryTok);
+      window.history.replaceState({}, '', window.location.pathname);
     }
+    let token = localStorage.getItem('ripple_token') || '';
 
-    let token = localStorage.getItem('ripple_token') || 'rpl_human_dev_token';
     let snapshot = null;
-    let selectedRunId = null;
-    let dialogueScope = 'workspace'; // 'workspace' | 'run'
-    let backlogFilter = 'all';
-    let evtSource = null;
-    let activeMobileTab = 'dialogue';
+    let publicBase = window.location.origin;
+    let selectedPreset = 'agy';
+    let currentTab = 'chat';
+    let mintedTokenCache = {};
 
-    function esc(s) {
-      return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-    }
+    const AGENTS_META = {
+      agy: { actorId: 'agy', name: 'Antigravity (@agy)' },
+      muse: { actorId: 'muse', name: 'Muse (@muse)' },
+      openclaw: { actorId: 'openclaw', name: 'OpenClaw (@openclaw)' },
+      grok: { actorId: 'grok', name: 'Grok (@grok)' },
+      custom: { actorId: 'custom-agent', name: 'Custom Agent' }
+    };
 
-    function formatBodyWithMentionsAndLinks(text) {
-      let safe = esc(text);
-      // Linkify URLs
-      safe = safe.replace(/(https?:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
-      // Highlight @mentions
-      safe = safe.replace(/@([a-zA-Z0-9_-]+)/g, '<span class="mention-tag">@$1</span>');
-      // Simple bold **text**
-      safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-      // Inline code `code`
-      safe = safe.replace(/`([^`]+)`/g, '<code class="mono" style="background:rgba(255,255,255,0.07);padding:1px 4px;border-radius:4px;">$1</code>');
-      return safe.replace(/\n/g, '<br/>');
-    }
-
-    async function api(method, path, body) {
-      const res = await fetch(path, {
-        method,
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        console.warn('API error:', data);
-        throw new Error(data.message || data.error || `HTTP ${res.status}`);
-      }
-      return data;
-    }
-
-    async function initStarterTokenIfNeeded() {
-      try {
-        await api('GET', '/api/v1/whoami');
-      } catch {
-        // Fallback to demo-actors auto-discovery so phone user never gets stuck on auth error
-        try {
-          const demo = await fetch('/api/v1/demo-actors').then(r => r.json());
-          if (demo && demo.defaultToken) {
-            token = demo.defaultToken;
-            localStorage.setItem('ripple_token', token);
-          }
-        } catch {}
-      }
-      const tokenEl = document.getElementById('token-input');
-      if (tokenEl) tokenEl.value = token;
-    }
-
-    function saveToken() {
-      const val = document.getElementById('token-input').value.trim();
+    function submitAuthToken() {
+      const val = document.getElementById('auth-token-input').value.trim();
       if (!val) return;
       token = val;
       localStorage.setItem('ripple_token', token);
-      closeModal('modal-profile');
+      document.getElementById('auth-modal').classList.remove('open');
       loadSnapshot();
       connectSSE();
     }
 
-    function switchActorView(newToken) {
-      if (!newToken) return;
-      token = newToken;
-      localStorage.setItem('ripple_token', token);
-      const tokenEl = document.getElementById('token-input');
-      if (tokenEl) tokenEl.value = token;
-      loadSnapshot();
-      connectSSE();
+    function toggleMobileSidebar(forceState) {
+      const aside = document.getElementById('left-sidebar');
+      const main = document.getElementById('main-area');
+      const show = typeof forceState === 'boolean' ? forceState : !aside.classList.contains('mobile-show-sidebar');
+      if (show) {
+        aside.classList.add('mobile-show-sidebar');
+        main.classList.add('mobile-hide-main');
+      } else {
+        aside.classList.remove('mobile-show-sidebar');
+        main.classList.remove('mobile-hide-main');
+      }
+    }
+
+    function switchTab(tabId) {
+      currentTab = tabId;
+      document.querySelectorAll('.view-pane').forEach(p => p.classList.remove('active'));
+      document.getElementById('view-' + tabId).classList.add('active');
+
+      // Update header pills
+      ['chat', 'tasks', 'runs'].forEach(id => {
+        const pill = document.getElementById('pill-tab-' + id);
+        if (id === tabId) {
+          pill.className = 'pill-tab px-3 py-1.5 rounded-full bg-white text-slate-900 shadow-sm transition flex items-center gap-1';
+        } else {
+          pill.className = 'pill-tab px-3 py-1.5 rounded-full text-slate-500 hover:text-slate-800 transition flex items-center gap-1';
+        }
+        const side = document.getElementById('side-tab-' + id);
+        if (side) {
+          if (id === tabId) {
+            side.classList.add('text-brand-coral');
+            side.classList.remove('text-slate-400');
+          } else {
+            side.classList.remove('text-brand-coral');
+            side.classList.add('text-slate-400');
+          }
+        }
+      });
+
+      toggleMobileSidebar(false);
+    }
+
+    function openInviteModal() {
+      document.getElementById('invite-modal').classList.add('open');
+      renderPromptPreview();
+    }
+
+    function closeInviteModal() {
+      document.getElementById('invite-modal').classList.remove('open');
+    }
+
+    function selectPreset(key, btnEl) {
+      selectedPreset = key;
+      document.querySelectorAll('.preset-btn').forEach(b => {
+        b.className = 'preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition';
+      });
+      if (btnEl) {
+        btnEl.className = 'preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-brand-coral text-white transition';
+      }
+      renderPromptPreview();
+    }
+
+    function buildPromptText(a, agentToken) {
+      const base = publicBase;
+      const mcpUrl = `${base}/mcp`;
+      const tokDisplay = agentToken || '<click "Copy Prompt for Agent" to mint a fresh token>';
+      return `You are invited to join David's collaborative workspace "Ripple" as ${a.name}.
+
+1. Workspace Endpoint: ${base}
+2. Your Bearer Token: ${tokDisplay}
+3. Step 1 (Check In):
+curl -fsSL -X POST "${base}/api/v1/threads/workspace/main" \\
+  -H "Authorization: Bearer ${tokDisplay}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"body":"@you Hi David! ${a.name} is connected and ready to collaborate."}'
+
+4. Step 2 (Get Context & Backlog):
+curl -fsSL -H "Authorization: Bearer ${tokDisplay}" "${base}/api/v1/context"
+
+5. Step 3 (Stay Listening & Respond to @mentions):
+Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events?token=${tokDisplay}"). Whenever a new message from @you or a peer agent mentions your @handle, read the context, do the requested work (PRs, reviews, docs, tasks), and reply via POST "${base}/api/v1/threads/workspace/main".
+
+6. MCP Configuration:
+{
+  "mcpServers": {
+    "ripple": {
+      "url": "${mcpUrl}",
+      "headers": { "Authorization": "Bearer ${tokDisplay}" }
+    }
+  }
+}`;
+    }
+
+    function renderPromptPreview() {
+      const a = AGENTS_META[selectedPreset];
+      const base = publicBase;
+      document.getElementById('mcp-preview-url').textContent = `${base}/mcp`;
+      document.getElementById('prompt-preview').textContent = buildPromptText(a, mintedTokenCache[selectedPreset]);
+    }
+
+    async function copyAgentPrompt() {
+      const a = AGENTS_META[selectedPreset];
+      if (!mintedTokenCache[selectedPreset]) {
+        const res = await api('POST', '/api/v1/invites', {
+          actorId: a.actorId,
+          actorName: a.name,
+          kind: 'agent',
+          rotate: true,
+        });
+        if (!res || !res.rawToken) {
+          showToast('Sign in first to mint an invite token');
+          return;
+        }
+        mintedTokenCache[selectedPreset] = res.rawToken;
+        renderPromptPreview();
+        loadSnapshot();
+      }
+      const text = document.getElementById('prompt-preview').textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast(`Minted token for ${a.name} & copied prompt!`);
+        const btnText = document.getElementById('btn-copy-text');
+        btnText.textContent = 'Copied!';
+        setTimeout(() => { btnText.textContent = 'Copy Prompt for Agent'; }, 2000);
+      } catch {
+        showToast('Minted token! Select text above to copy.');
+      }
+    }
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.remove('hidden');
+      setTimeout(() => t.classList.add('hidden'), 2600);
+    }
+
+    function insertTag(tag) {
+      const input = document.getElementById('chat-input');
+      input.value += tag;
+      input.focus();
+      if (currentTab !== 'chat') switchTab('chat');
+    }
+
+    async function api(method, path, body) {
+      if (!token) {
+        document.getElementById('auth-modal').classList.add('open');
+        return null;
+      }
+      const res = await fetch(path, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (res.status === 401) {
+        document.getElementById('auth-modal').classList.add('open');
+        return null;
+      }
+      return res.json();
+    }
+
+    let refreshTimer = null;
+    let sseSource = null;
+    let lastRenderSig = '';
+    let lastMsgCount = 0;
+
+    function scheduleRefresh() {
+      if (refreshTimer) return;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        loadSnapshot();
+      }, 150);
     }
 
     async function loadSnapshot() {
       try {
-        snapshot = await api('GET', '/api/v1/snapshot');
-        if (!selectedRunId && snapshot.runs.length > 0) {
-          const primaryRun = snapshot.runs.find(r => !r.parentRunId) || snapshot.runs[0];
-          selectedRunId = primaryRun.id;
-        }
-        render();
-        if (dialogueScope === 'run' && selectedRunId) {
-          await loadRunThread(selectedRunId);
+        const data = await api('GET', '/api/v1/snapshot');
+        if (!data) return;
+        snapshot = data;
+        if (snapshot.publicUrl) publicBase = snapshot.publicUrl;
+        const sig = JSON.stringify({
+          m: (data.messages || []).length,
+          lm: (data.messages || []).slice(-1)[0]?.id,
+          rb: (data.messages || []).map(x => (x.readBy || []).map(r => r.actorId + (r.ack ? '!' : '') + (r.emoji || '')).join(',')),
+          i: (data.items || []).length,
+          c: (data.cards || []).map(x => x.id + x.status),
+          r: (data.runs || []).map(x => x.id + x.status),
+          a: (data.agents || []).length,
+          ar: (data.artifacts || []).length,
+          q: document.getElementById('global-search')?.value || ''
+        });
+        if (sig !== lastRenderSig) {
+          lastRenderSig = sig;
+          renderAll();
         }
       } catch (e) {
-        const el = document.getElementById('sse-status');
-        el.textContent = 'reconnecting...';
-        el.className = 'pill warn';
+        console.error('Snapshot error:', e);
       }
     }
 
     function connectSSE() {
-      if (evtSource) evtSource.close();
-      evtSource = new EventSource(`/api/v1/events?token=${encodeURIComponent(token)}`);
-      evtSource.onopen = () => {
-        const el = document.getElementById('sse-status');
-        el.textContent = '● Live SSE';
-        el.className = 'pill ok';
+      if (!token) return;
+      if (sseSource) {
+        try { sseSource.close(); } catch {}
+      }
+      const sse = new EventSource(`/api/v1/events?token=${encodeURIComponent(token)}&after=latest`);
+      sseSource = sse;
+      sse.onmessage = () => scheduleRefresh();
+      ['thread.message', 'thread.read', 'thread.ack', 'item.created', 'item.updated', 'run.claimed', 'run.planned', 'run.step', 'run.done', 'card.opened', 'card.answered', 'card.stale', 'artifact.added', 'principal.updated'].forEach(evt => {
+        sse.addEventListener(evt, () => scheduleRefresh());
+      });
+      sse.onerror = () => {
+        try { sse.close(); } catch {}
+        setTimeout(connectSSE, 3000);
       };
-      evtSource.onerror = () => {
-        const el = document.getElementById('sse-status');
-        el.textContent = 'reconnecting...';
-        el.className = 'pill warn';
-      };
-      evtSource.onmessage = () => loadSnapshot();
-      [
-        'principal.updated', 'item.created', 'item.updated',
-        'run.claimed', 'run.planned', 'run.step', 'run.subrun_spawned', 'run.reported',
-        'run.checkpoint', 'run.fenced', 'run.done', 'run.resumed', 'run.heartbeat_lost',
-        'steer.queued', 'steer.delivered', 'steer.acked',
-        'card.opened', 'card.stale', 'card.answered',
-        'artifact.added', 'flow.triggered', 'thread.message'
-      ].forEach(t => {
-        evtSource.addEventListener(t, () => loadSnapshot());
-      });
     }
 
-    function switchMobileTab(tab) {
-      activeMobileTab = tab;
-      document.querySelectorAll('.mobile-nav button').forEach(b => b.classList.remove('active'));
-      const btn = document.getElementById(`mnav-${tab}`);
-      if (btn) btn.classList.add('active');
-
-      document.querySelectorAll('[data-mobile-section]').forEach(sec => {
-        if (sec.getAttribute('data-mobile-section') === tab) {
-          sec.classList.add('mobile-active');
-        } else {
-          sec.classList.remove('mobile-active');
-        }
-      });
-    }
-
-    function openModal(id) { document.getElementById(id).classList.add('open'); }
-    function closeModal(id) { document.getElementById(id).classList.remove('open'); }
-
-    function openProfileModal() {
-      if (snapshot?.whoami) {
-        document.getElementById('profile-name').value = snapshot.whoami.actorName || '';
-        document.getElementById('profile-status').value = snapshot.whoami.statusText || 'Online · Lead & Reviewer';
-        document.getElementById('profile-bio').value = snapshot.whoami.bio || '';
-      }
-      document.getElementById('token-input').value = token;
-      openModal('modal-profile');
-    }
-
-    async function submitProfileUpdate(e) {
-      e.preventDefault();
-      await api('PATCH', '/api/v1/me', {
-        actorName: document.getElementById('profile-name').value.trim(),
-        statusText: document.getElementById('profile-status').value.trim(),
-        bio: document.getElementById('profile-bio').value.trim(),
-      });
-      closeModal('modal-profile');
+    async function ackMsg(msgId, emoji = '✅') {
+      await api('POST', `/api/v1/threads/workspace/main/messages/${encodeURIComponent(msgId)}/ack`, { emoji, ack: true });
       loadSnapshot();
     }
 
-    function openPhoneShareModal() {
-      const base = snapshot?.publicUrl || window.location.origin;
-      const magicUrl = `${base}/?token=${encodeURIComponent(token)}`;
-      document.getElementById('phone-actor-label').textContent = snapshot?.whoami?.actorName || 'David (@dweidai)';
-      document.getElementById('phone-magic-url').textContent = magicUrl;
-      openModal('modal-phone');
-    }
-
-    function openInviteModal(preset) {
-      if (preset) selectInvitePreset(preset);
-      openModal('modal-invite');
-    }
-
-    function selectInvitePreset(kind) {
-      const idEl = document.getElementById('invite-actor-id');
-      const nameEl = document.getElementById('invite-actor-name');
-      const bioEl = document.getElementById('invite-actor-bio');
-      if (kind === 'agy') {
-        idEl.value = 'agy';
-        nameEl.value = 'Antigravity (@agy)';
-        bioEl.value = 'Lead Engineering & Architecture Agent · Spawns GitHub PR sub-agents';
-      } else if (kind === 'muse') {
-        idEl.value = 'muse';
-        nameEl.value = 'Muse (@muse)';
-        bioEl.value = 'Product, Research & Strategy Lead · Spawns Google Drive & Docs sub-agents';
-      } else if (kind === 'subagent') {
-        idEl.value = 'agy-sub-pr';
-        nameEl.value = 'Antigravity PR Sub-Agent';
-        bioEl.value = 'Specialized GitHub PR & Drive execution sub-agent';
-      } else {
-        idEl.value = 'custom-agent';
-        nameEl.value = 'Custom Collaborator Agent';
-        bioEl.value = 'Connected via Streamable HTTP MCP /mcp';
-      }
-    }
-
-    async function submitInviteAgent(e) {
-      e.preventDefault();
-      const res = await api('POST', '/api/v1/invites', {
-        actorId: document.getElementById('invite-actor-id').value.trim(),
-        actorName: document.getElementById('invite-actor-name').value.trim(),
-        bio: document.getElementById('invite-actor-bio').value.trim(),
-        kind: 'agent',
-        announceInDialogue: document.getElementById('invite-announce').checked,
-      });
-      document.getElementById('invite-result').style.display = 'block';
-      document.getElementById('invite-raw-token').textContent = `Token: ${res.rawToken}`;
-      document.getElementById('invite-mcp-json').textContent = JSON.stringify(res.onboarding.mcpJson, null, 2);
-      document.getElementById('invite-doorway-prompt').textContent = res.onboarding.doorwayPrompt;
-      document.getElementById('invite-cli-cmd').textContent = res.onboarding.cliCommand;
-      loadSnapshot();
-    }
-
-    function copyText(elId) {
-      const text = document.getElementById(elId).textContent;
-      navigator.clipboard?.writeText(text);
-    }
-
-    // Dialogue & Mentions
-    function setDialogueScope(scope) {
-      dialogueScope = scope;
-      document.getElementById('btn-scope-ws').className = scope === 'workspace' ? 'sm primary' : 'sm';
-      document.getElementById('btn-scope-run').className = scope === 'run' ? 'sm primary' : 'sm';
-      document.getElementById('dialogue-scope-pill').textContent =
-        scope === 'workspace' ? '#workspace / main' : `#run / ${selectedRunId || 'none'}`;
-      render();
-      if (scope === 'run' && selectedRunId) loadRunThread(selectedRunId);
-    }
-
-    function insertMention(tag) {
-      const input = document.getElementById('dialogue-input');
-      input.value = (input.value ? input.value + ' ' : '') + tag;
-      input.focus();
-    }
-
-    async function postDialogueMessage(e) {
-      e.preventDefault();
-      const input = document.getElementById('dialogue-input');
-      const sendToAgent = document.getElementById('dialogue-steer').checked;
-      const body = input.value.trim();
-      if (!body) return;
-      input.value = '';
-      document.getElementById('dialogue-steer').checked = false;
-
-      const scopeKind = dialogueScope === 'run' && selectedRunId ? 'run' : 'workspace';
-      const scopeId = scopeKind === 'run' ? selectedRunId : 'main';
-      await api('POST', `/api/v1/threads/${scopeKind}/${scopeId}`, {
-        body,
-        runId: selectedRunId || undefined,
-        sendToAgent,
-      });
-      loadSnapshot();
-    }
-
-    async function triggerFullMultiAgentWorkflow() {
-      setDialogueScope('workspace');
-      await api('POST', '/api/v1/threads/workspace/main', {
-        body: '@muse @agy Let\'s sync our backlog tasks, spin up your sub-agents to draft a Google Doc specification in Drive and open a real GitHub Pull Request on dweidai/ripple, and report back!',
-      });
-      loadSnapshot();
-    }
-
-    async function loadRunThread(runId) {
-      if (!runId || dialogueScope !== 'run') return;
-      const msgs = await api('GET', `/api/v1/threads/run/${runId}`);
-      renderMessagesList(msgs);
-    }
-
-    function renderMessagesList(msgs) {
-      const box = document.getElementById('dialogue-list');
-      if (!box) return;
-      if (!msgs || msgs.length === 0) {
-        box.innerHTML = '<div class="muted" style="padding:12px;">No messages in this thread yet. Mention <code>@agy</code> or <code>@muse</code> below!</div>';
-        return;
-      }
-      box.innerHTML = msgs.map(m => {
-        const isHuman = m.authorKind === 'human';
-        const isMuse = m.actorId === 'muse';
-        const isAgy = m.actorId === 'agy';
-        const isSub = (m.actorId || '').includes('-sub-');
-        const cls = isHuman ? 'human' : isMuse ? 'muse' : isAgy ? 'agy' : isSub ? 'subagent' : '';
-        const badgeCls = isHuman ? 'ok' : isMuse ? 'purp' : isAgy ? 'pri' : 'warn';
-        const roleLabel = isHuman ? 'YOU (HUMAN LEAD)' : isMuse ? 'MUSE · STRATEGY' : isAgy ? 'ANTIGRAVITY · ENG' : 'SUB-AGENT';
-        return `
-          <div class="msg-card ${cls}">
-            <div class="between" style="margin-bottom:4px;">
-              <div class="flex wrap">
-                <strong>${esc(m.author)}</strong>
-                <span class="pill ${badgeCls}">${roleLabel}</span>
-                ${m.steerId ? '<span class="pill warn">mid-flight steer</span>' : ''}
-                ${m.runId ? `<span class="pill mono" onclick="selectRun('${esc(m.runId)}')" style="cursor:pointer;">run:${esc(m.runId)}</span>` : ''}
-              </div>
-              <span class="muted mono" style="font-size:10px;">${new Date(m.createdAt).toLocaleTimeString()}</span>
-            </div>
-            <div>${formatBodyWithMentionsAndLinks(m.body)}</div>
-          </div>
-        `;
-      }).join('');
-      box.scrollTop = box.scrollHeight;
-    }
-
-    // Backlog & Tasks CRUD
-    function setBacklogFilter(f) {
-      backlogFilter = f;
-      const container = document.getElementById('backlog-filters');
-      if (container) {
-        [...container.querySelectorAll('button')].forEach(b => {
-          b.className = b.getAttribute('onclick')?.includes(`'${f}'`) ? 'sm primary' : 'sm';
-        });
-      }
-      render();
-    }
-
-    function openTaskModal(itemId) {
-      const item = itemId ? snapshot?.items?.find(i => i.id === itemId) : null;
-      document.getElementById('task-edit-id').value = item ? item.id : '';
-      document.getElementById('task-modal-title').textContent = item ? `✏️ Edit Task (${item.id})` : '📋 Create Backlog Task';
-      document.getElementById('task-title').value = item ? item.title : '';
-      document.getElementById('task-body').value = item ? item.body : '';
-      document.getElementById('task-priority').value = item ? item.priority : 'P1';
-      document.getElementById('task-assignee').value = item?.assigneeId || 'agy';
-      document.getElementById('task-tags').value = item?.tags?.join(', ') || '';
-      openModal('modal-task');
-    }
-
-    async function submitTaskModal(e) {
-      e.preventDefault();
-      const editId = document.getElementById('task-edit-id').value;
-      const payload = {
-        title: document.getElementById('task-title').value.trim(),
-        body: document.getElementById('task-body').value.trim(),
-        priority: document.getElementById('task-priority').value,
-        assigneeId: document.getElementById('task-assignee').value,
-        tags: document.getElementById('task-tags').value.split(',').map(s => s.trim()).filter(Boolean),
-      };
-      if (editId) {
-        await api('PATCH', `/api/v1/items/${editId}`, payload);
-      } else {
-        await api('POST', '/api/v1/items', payload);
-      }
-      closeModal('modal-task');
-      loadSnapshot();
-    }
-
-    async function markTaskDone(itemId) {
-      await api('PATCH', `/api/v1/items/${itemId}`, { status: 'done' });
-      loadSnapshot();
-    }
-
-    async function dispatchTaskToAgent(itemId, agentId) {
-      const item = snapshot?.items?.find(i => i.id === itemId);
-      if (!item) return;
-      await api('PATCH', `/api/v1/items/${itemId}`, { assigneeId: agentId });
-      await api('POST', '/api/v1/threads/workspace/main', {
-        body: `@${agentId} Please pick up backlog task "${item.title}" (${item.id}), spin up your sub-agent if needed, and report back!`,
-        itemId: item.id,
-      });
-      loadSnapshot();
-    }
-
-    // Runs, Sub-Runs & Steers
-    function selectRun(id) {
-      selectedRunId = id;
-      render();
-      if (dialogueScope === 'run') loadRunThread(id);
-    }
-
-    function openSteerModal(runId, idx, stepTitle) {
-      document.getElementById('steer-run-id').value = runId;
-      document.getElementById('steer-step-idx').value = idx;
-      document.getElementById('steer-target-label').textContent = `Steering Run ${runId} · Step #${idx} (${stepTitle})`;
-      document.getElementById('steer-title').value = stepTitle || '';
-      openModal('modal-steer');
-    }
-
-    async function submitSteerModal(e) {
-      e.preventDefault();
-      const runId = document.getElementById('steer-run-id').value;
-      const idx = Number(document.getElementById('steer-step-idx').value || 1);
-      const title = document.getElementById('steer-title').value.trim();
-      const urgency = document.getElementById('steer-urgency').value;
-      if (!title) return;
-      await api('POST', `/api/v1/runs/${runId}/steers`, {
-        op: 'edit',
-        urgency,
-        payload: { step_idx: idx, title },
-      });
-      closeModal('modal-steer');
-      loadSnapshot();
-    }
-
-    function openSpawnSubrunModal(toolPreset, parentId) {
-      const parentSelect = document.getElementById('subrun-parent-id');
-      const runs = snapshot?.runs || [];
-      const rootRuns = runs.filter(r => !r.parentRunId && !['done','cancelled','overridden','failed'].includes(r.status));
-      const pool = rootRuns.length > 0 ? rootRuns : runs;
-      parentSelect.innerHTML = pool.map(r => `<option value="${esc(r.id)}" ${r.id === (parentId || selectedRunId) ? 'selected' : ''}>${esc(r.id)} (${esc(r.ownerAgent)} · ${esc(r.title || r.status)})</option>`).join('');
-
-      document.getElementById('subrun-tool').value = toolPreset || 'github_pr';
-      onSubrunToolChange(toolPreset || 'github_pr');
-      openModal('modal-subrun');
-    }
-
-    function onSubrunToolChange(tool) {
-      const titleEl = document.getElementById('subrun-title');
-      if (tool === 'github_pr') {
-        titleEl.value = 'Open GitHub Pull Request on dweidai/ripple via gh CLI';
-      } else if (tool === 'drive_doc') {
-        titleEl.value = 'Create Google Doc Spec & Index Drive via gdocs/gdrive CLI';
-      } else {
-        titleEl.value = 'Execute Specialized Sub-Agent Verification';
-      }
-    }
-
-    async function submitSpawnSubrun(e) {
-      e.preventDefault();
-      let parentId = document.getElementById('subrun-parent-id').value;
-      const tool = document.getElementById('subrun-tool').value;
-      const title = document.getElementById('subrun-title').value.trim();
-      const goal = document.getElementById('subrun-goal').value.trim();
-
-      const btn = document.getElementById('subrun-submit-btn');
-      btn.disabled = true;
-      btn.textContent = 'Running Sub-Agent...';
-      try {
-        // If no active parent run exists yet, create & claim one automatically
-        if (!parentId) {
-          const item = await api('POST', '/api/v1/items', {
-            title,
-            body: goal,
-            priority: 'P0',
-            assigneeId: tool === 'drive_doc' ? 'muse' : 'agy',
-          });
-          const claimed = await api('POST', `/api/v1/items/${item.id}/claim`);
-          parentId = claimed.id;
-        }
-        const res = await api('POST', `/api/v1/runs/${parentId}/subruns`, {
-          title,
-          goal,
-          executeTool: tool || undefined,
-        });
-        selectedRunId = res.run?.id || parentId;
-        closeModal('modal-subrun');
+    setInterval(() => {
+      if (document.visibilityState === 'visible' && token) loadSnapshot();
+    }, 3000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && token) {
         loadSnapshot();
-      } finally {
-        btn.disabled = false;
-        btn.textContent = 'Spawn & Execute Sub-Agent';
+        connectSSE();
       }
-    }
+    });
+    window.addEventListener('focus', () => {
+      if (token) loadSnapshot();
+    });
 
-    async function triggerFlow(flowId) {
-      const res = await api('POST', `/api/v1/flows/${flowId}/trigger`);
-      selectedRunId = res.run.id;
+    async function revokeAgent(e, actorId) {
+      e.stopPropagation();
+      await api('DELETE', `/api/v1/tokens/${encodeURIComponent(actorId)}`);
+      showToast(`Revoked @${actorId}`);
       loadSnapshot();
     }
 
-    async function takeover(runId) {
-      await api('POST', `/api/v1/runs/${runId}/takeover`);
+    async function handleSendChat(e) {
+      e.preventDefault();
+      const input = document.getElementById('chat-input');
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = '';
+      await api('POST', '/api/v1/threads/workspace/main', { body: text });
       loadSnapshot();
     }
 
-    async function answerCard(cardId, option, onPin) {
+    async function handleAnswerCard(cardId, option, onPin) {
       await api('POST', `/api/v1/cards/${cardId}/answer`, { option, onPin });
+      showToast(`Decision recorded: ${option}`);
       loadSnapshot();
     }
 
-    function renderArtifactChip(a) {
-      const href = a.url || (a.ref && a.ref.startsWith('http') ? a.ref : '');
-      const icon = a.kind === 'pr' ? '🔀' : a.kind === 'gdoc' ? '📄' : a.kind === 'drive' ? '📁' : a.kind === 'commit' ? '📌' : '🔗';
-      if (href) {
-        return `<a class="artifact-chip ${esc(a.kind)}" href="${esc(href)}" target="_blank" rel="noopener">${icon} <strong>${esc(a.label)}</strong> <span class="muted mono">↗</span></a>`;
-      }
-      return `<span class="artifact-chip ${esc(a.kind)}">${icon} <strong>${esc(a.label)}</strong> <code class="mono">${esc(a.ref.slice(0, 10))}</code></span>`;
+    async function toggleTask(itemId, currentStatus) {
+      const newStatus = currentStatus === 'done' ? 'open' : 'done';
+      await api('PATCH', `/api/v1/items/${itemId}`, { status: newStatus });
+      loadSnapshot();
     }
 
-    function render() {
+    function toggleNewTaskInput() {
+      const box = document.getElementById('new-task-box');
+      box.classList.toggle('hidden');
+      if (!box.classList.contains('hidden')) document.getElementById('new-task-title-input').focus();
+    }
+
+    async function submitNewTask() {
+      const input = document.getElementById('new-task-title-input');
+      const title = input.value.trim();
+      if (!title) return;
+      input.value = '';
+      document.getElementById('new-task-box').classList.add('hidden');
+      await api('POST', '/api/v1/items', { title, priority: 'P1' });
+      loadSnapshot();
+    }
+
+    function copyText(str) {
+      navigator.clipboard?.writeText(str).then(() => showToast('Copied message'));
+    }
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+    }
+
+    function renderAll() {
       if (!snapshot) return;
+      const query = (document.getElementById('global-search')?.value || '').trim().toLowerCase();
 
-      // 1. Header Identity ("See Myself")
-      if (snapshot.whoami) {
-        document.getElementById('whoami-name').textContent = snapshot.whoami.actorName;
-        document.getElementById('whoami-avatar').textContent = (snapshot.whoami.actorName || 'D')[0].toUpperCase();
-        const roles = (snapshot.whoami.roles || []).join(' · ');
-        document.getElementById('whoami-roles').textContent = `@${snapshot.whoami.actorId} (${snapshot.whoami.kind})${roles ? ' · ' + roles : ''}`;
-      }
-      if (snapshot.publicUrl) {
-        document.getElementById('public-url-banner').textContent = `Hosted: ${snapshot.publicUrl}`;
-      }
-
-      // 2. Roster & Agents (showing Humans, Primary Agents, and indented Sub-Agents)
-      const agents = snapshot.agents || [];
-      const primaryActors = agents.filter(a => !a.parentAgentId);
-      const subActors = agents.filter(a => a.parentAgentId);
-
-      document.getElementById('agents-list').innerHTML = primaryActors.map(a => {
-        const children = subActors.filter(s => s.parentAgentId === a.actorId);
-        const badgeCls = a.kind === 'human' ? 'ok' : a.actorId === 'muse' ? 'purp' : 'pri';
-        return `
-          <div class="row" style="margin-bottom:6px;">
-            <div class="between">
-              <div class="flex">
-                <span class="online-dot"></span>
-                <strong>${esc(a.actorName)}</strong>
-                <span class="pill ${badgeCls}">@${esc(a.actorId)}</span>
-              </div>
-              <span class="pill">${esc(a.kind)}</span>
-            </div>
-            <div class="muted" style="font-size:11px; margin-top:3px;">
-              ${esc(a.statusText || a.bio || 'Online')}
-              ${a.capabilities?.length ? ` · <span class="mono">[${esc(a.capabilities.join(', '))}]</span>` : ''}
-            </div>
-            ${children.map(sub => `
-              <div style="margin-top:6px; margin-left:14px; padding-left:8px; border-left:2px solid var(--purple); font-size:11.5px;">
-                <div class="between">
-                  <span>🌿 <strong>${esc(sub.actorName)}</strong> <code class="mono">@${esc(sub.actorId)}</code></span>
-                  <span class="pill purp">sub-agent</span>
-                </div>
-                <div class="muted" style="font-size:10.5px;">${esc(sub.statusText || 'Ready')}</div>
-              </div>
-            `).join('')}
-          </div>
-        `;
-      }).join('');
-
-      // 3. Dialogue Messages (only re-render when in workspace scope; preserves input typing!)
-      if (dialogueScope === 'workspace') {
-        renderMessagesList(snapshot.messages || []);
-      }
-
-      // 4. Backlog & Tasks Board
-      const allItems = snapshot.items || [];
-      document.getElementById('items-count').textContent = allItems.length;
-      const filteredItems = allItems.filter(i => {
-        if (backlogFilter === 'done') return i.status === 'done';
-        if (backlogFilter === 'you') return i.assigneeId === 'you' || i.createdBy === 'you';
-        if (backlogFilter === 'agy') return (i.assigneeId || '').startsWith('agy');
-        if (backlogFilter === 'muse') return (i.assigneeId || '').startsWith('muse');
-        return true;
-      });
-
-      document.getElementById('items-list').innerHTML = filteredItems.map(i => {
-        const priCls = i.priority === 'P0' ? 'err' : i.priority === 'P1' ? 'warn' : '';
-        const stCls = i.status === 'done' ? 'ok' : i.status === 'active' ? 'pri' : '';
-        return `
-          <div class="row" style="${i.parentItemId ? 'margin-left:14px; border-left:3px solid var(--primary);' : ''}">
-            <div class="between">
-              <strong>${esc(i.title)}</strong>
-              <div class="flex">
-                <span class="pill ${priCls}">${esc(i.priority)}</span>
-                <span class="pill ${stCls}">${esc(i.status)}</span>
-              </div>
-            </div>
-            ${i.body ? `<div class="muted" style="margin-top:3px; font-size:11.5px;">${esc(i.body)}</div>` : ''}
-            <div class="between wrap" style="margin-top:6px;">
-              <div class="flex wrap">
-                <span class="pill mono">${esc(i.id)}</span>
-                ${i.assigneeId ? `<span class="pill pri">→ @${esc(i.assigneeId)}</span>` : ''}
-                ${(i.tags || []).map(t => `<span class="pill">#${esc(t)}</span>`).join('')}
-              </div>
-              <div class="flex">
-                ${i.resultUrl ? `<a class="pill ok" href="${esc(i.resultUrl)}" target="_blank">↗ Deliverable</a>` : ''}
-                <button class="sm" onclick="openTaskModal('${esc(i.id)}')">Edit</button>
-                ${i.status !== 'done' ? `
-                  <button class="sm" onclick="dispatchTaskToAgent('${esc(i.id)}', '${esc(i.assigneeId === 'muse' ? 'muse' : 'agy')}')">▶ Run</button>
-                  <button class="sm success" onclick="markTaskDone('${esc(i.id)}')">✓</button>
-                ` : ''}
-              </div>
-            </div>
-          </div>
-        `;
-      }).join('') || '<div class="muted">No matching tasks.</div>';
-
-      // 5. Flow Lane with 14-Run Health Strip
-      const flows = snapshot.flows || [];
-      document.getElementById('flows-count').textContent = flows.length;
-      document.getElementById('flows-list').innerHTML = flows.map(f => {
-        const history = f.recentRuns || [];
-        const padded = Array.from({ length: 14 }, (_, idx) => history[idx - (14 - history.length)] || null);
-        return `
-          <div class="row">
-            <div class="between">
-              <strong>${esc(f.name)}</strong>
-              <button class="sm" onclick="triggerFlow('${esc(f.id)}')">▶ Trigger</button>
-            </div>
-            <div class="between" style="margin-top:6px;">
-              <span class="muted">${esc(f.triggerKind)} · <code>@${esc(f.agentId)}</code></span>
-              <div class="flow-strip" id="flow-strip-${esc(f.id)}" title="14-run health history">
-                ${padded.map(r => `<span class="flow-dot ${r ? esc(r.status) : ''}" title="${r ? esc(r.id + ': ' + r.status) : 'empty'}"></span>`).join('')}
-              </div>
-            </div>
-          </div>
-        `;
-      }).join('');
-
-      // 6. Hierarchical Runs & Sub-Agents Tree
-      const runs = snapshot.runs || [];
-      document.getElementById('runs-count').textContent = `${runs.length} runs`;
-      const rootRuns = runs.filter(r => !r.parentRunId);
-      const childRunsByParent = {};
-      runs.filter(r => r.parentRunId).forEach(r => {
-        childRunsByParent[r.parentRunId] = childRunsByParent[r.parentRunId] || [];
-        childRunsByParent[r.parentRunId].push(r);
-      });
-
-      document.getElementById('run-tree-selector').innerHTML = rootRuns.map(r => {
-        const subs = childRunsByParent[r.id] || [];
-        return `
-          <div class="flex wrap" style="margin-right:6px; margin-bottom:4px;">
-            <button class="sm ${r.id === selectedRunId ? 'primary' : ''}" onclick="selectRun('${esc(r.id)}')">
-              ${esc(r.title ? r.title.slice(0, 26) : r.id)} (@${esc(r.ownerAgent)} · ${esc(r.status)})
-            </button>
-            ${subs.map(sr => `
-              <button class="sm ${sr.id === selectedRunId ? 'purple' : ''}" onclick="selectRun('${esc(sr.id)}')" style="border-color:var(--purple);">
-                ↳ 🌿 ${esc(sr.ownerAgent)} (${esc(sr.status)})
-              </button>
-            `).join('')}
-          </div>
-        `;
-      }).join('');
-
-      const run = runs.find(r => r.id === selectedRunId) || runs[0];
-      if (!run) {
-        document.getElementById('run-detail').innerHTML = '<div class="muted">No active runs yet. Click "🚀 Have Agy & Muse sync backlog + spin sub-agents" above!</div>';
-      } else {
-        const subruns = childRunsByParent[run.id] || [];
-        const statusCls = run.status === 'done' ? 'ok' : run.status === 'gated' ? 'warn' : ['overridden','stalled','failed'].includes(run.status) ? 'err' : 'pri';
-        document.getElementById('run-detail').innerHTML = `
-          <div class="between wrap" style="margin-bottom:10px;">
-            <div>
-              <strong>${esc(run.title || run.id)}</strong>
-              <span class="pill mono">${esc(run.id)}</span>
-              <span class="pill ${run.parentRunId ? 'purp' : 'pri'}">@${esc(run.ownerAgent)}${run.depth ? ` · depth ${run.depth}` : ''}</span>
-              <span class="pill">plan v${run.planVersion} · epoch ${run.epoch}</span>
-              <span class="pill ${statusCls}">${esc(run.status)}</span>
-            </div>
-            <div class="flex">
-              <button class="sm" onclick="openSpawnSubrunModal('github_pr', '${esc(run.parentRunId || run.id)}')">+ Sub-Agent</button>
-              <button class="sm danger" onclick="takeover('${esc(run.id)}')">Takeover (Fence)</button>
-            </div>
-          </div>
-          ${run.parentRunId ? `<div class="muted" style="margin-bottom:6px;">↳ Child Sub-Run of <a href="javascript:void(0)" onclick="selectRun('${esc(run.parentRunId)}')"><code>${esc(run.parentRunId)}</code></a></div>` : ''}
-          ${run.reportSummary ? `<div class="row" style="border-color:var(--success); background:rgba(63,185,80,0.08);"><strong>📋 Sub-Agent Report:</strong> ${formatBodyWithMentionsAndLinks(run.reportSummary)}</div>` : ''}
-          ${run.touches?.length ? `<div class="muted" style="margin-bottom:8px;">Touches: <code class="mono">${esc(run.touches.join(', '))}</code></div>` : ''}
-          ${(run.steps || []).map(s => `
-            <div class="row ${s.status === 'active' ? 'active' : ''}">
-              <div class="between">
-                <span><strong>${s.idx}.</strong> ${esc(s.title)} ${s.kind === 'gate' ? '<span class="pill warn">GATE</span>' : ''}</span>
-                <div class="flex">
-                  <button class="sm" onclick="openSteerModal('${esc(run.id)}', ${s.idx}, '${esc(s.title.replace(/'/g, ''))}')">Steer</button>
-                  <span class="pill ${s.status === 'done' ? 'ok' : s.status === 'active' ? 'pri' : ''}">${esc(s.status)}</span>
-                </div>
-              </div>
-              ${s.note ? `<div class="muted" style="margin-top:4px;">${formatBodyWithMentionsAndLinks(s.note)}</div>` : ''}
-            </div>
-          `).join('') || '<div class="muted">Waiting for plan steps...</div>'}
-          ${subruns.length ? `
-            <div style="margin-top:10px;">
-              <div class="muted" style="margin-bottom:6px;">🌿 Spawned Sub-Agent Runs (${subruns.length}):</div>
-              ${subruns.map(sr => `
-                <div class="row subrun" onclick="selectRun('${esc(sr.id)}')" style="cursor:pointer;">
-                  <div class="between">
-                    <span><strong>${esc(sr.title || sr.id)}</strong> · <code>@${esc(sr.ownerAgent)}</code></span>
-                    <span class="pill ${sr.status === 'done' ? 'ok' : 'purp'}">${esc(sr.status)}</span>
-                  </div>
-                  ${sr.reportSummary ? `<div class="muted" style="margin-top:4px;">${formatBodyWithMentionsAndLinks(sr.reportSummary)}</div>` : ''}
-                  <div class="flex wrap" style="margin-top:4px;">
-                    ${(sr.artifacts || []).map(renderArtifactChip).join('')}
-                  </div>
-                </div>
-              `).join('')}
-            </div>
-          ` : ''}
-          ${(run.artifacts || []).length ? `
-            <div style="margin-top:8px;">
-              <div class="muted">Attached Artifacts (Pin-Bound):</div>
-              <div class="flex wrap" style="margin-top:4px;">
-                ${run.artifacts.map(renderArtifactChip).join('')}
-              </div>
-            </div>
-          ` : ''}
-        `;
-      }
-
-      // 7. Decisions Tray
+      const participants = snapshot.agents || [];
+      const human = participants.find(p => p.kind === 'human');
+      const agents = participants.filter(p => p.kind === 'agent');
+      const msgs = snapshot.messages || [];
       const cards = snapshot.cards || [];
-      const openCards = cards.filter(c => c.status === 'open');
-      document.getElementById('open-cards-pill').textContent = `${openCards.length} open`;
-      document.getElementById('mnav-decisions-label').textContent = openCards.length > 0 ? `Decisions (${openCards.length})` : 'Decisions';
+      const artifacts = snapshot.artifacts || [];
+      const items = snapshot.items || [];
+      const runs = snapshot.runs || [];
 
-      document.getElementById('cards-list').innerHTML = cards.map(c => `
-        <div class="row">
-          <div class="between">
-            <strong>${esc(c.prompt)}</strong>
-            <span class="pill ${c.status === 'open' ? 'warn' : c.status === 'answered' ? 'ok' : 'err'}">${esc(c.status)}</span>
-          </div>
-          <div class="muted mono" style="font-size:11px; margin-top:3px;">
-            ${esc(c.id)} · asker: @${esc(c.asker)} · pin <code>${esc(c.pin.kind)}:${esc(c.pin.value.slice(0, 12))}</code>
-          </div>
-          ${c.diffPreview ? `<pre>${formatBodyWithMentionsAndLinks(c.diffPreview)}</pre>` : ''}
-          ${c.status === 'open' ? `
-            <div class="flex wrap" style="margin-top:8px;">
-              ${(c.options?.length ? c.options : ['approve', 'reject']).map(opt => `
-                <button class="sm ${opt === 'approve' ? 'success' : opt === 'reject' ? 'danger' : 'primary'}" onclick="answerCard('${esc(c.id)}', '${esc(opt)}', '${esc(c.pin.value)}')">${esc(opt)}</button>
-              `).join('')}
+      // Header presence
+      document.getElementById('header-presence').textContent =
+        `${human?.actorName || 'David'} • ${agents.length} AI agent${agents.length === 1 ? '' : 's'} connected`;
+      document.getElementById('sidebar-agent-count').textContent = `${agents.length} agents`;
+
+      // Sidebar Roster
+      const lastMsg = msgs[msgs.length - 1];
+      let rosterHtml = `
+        <div onclick="switchTab('chat')" class="p-3 rounded-2xl bg-orange-50/50 hover:bg-orange-50 transition cursor-pointer flex items-center justify-between border border-orange-100/70">
+          <div class="flex items-center space-x-3 min-w-0">
+            <div class="relative flex-shrink-0">
+              <div class="w-10 h-10 rounded-full bg-gradient-to-br from-orange-400 to-brand-coral text-white flex items-center justify-center font-bold text-xs shadow-sm">#</div>
+              <span class="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 rounded-full ring-2 ring-white"></span>
             </div>
-          ` : c.status === 'answered' ? `<div class="muted" style="margin-top:4px;">✓ Decided: <strong>${esc(c.answerOption)}</strong> by @${esc(c.answeredBy || 'you')} on pin <code>${esc(c.decidedOnPin?.slice(0, 10))}</code></div>` : `<div class="muted">Stale → replaced by ${esc(c.replacedBy || 'new card')}</div>`}
+            <div class="min-w-0">
+              <p class="text-sm font-semibold text-slate-900 truncate">main</p>
+              <p class="text-xs text-brand-coral truncate font-medium">${esc(lastMsg ? lastMsg.author + ': ' + lastMsg.body : 'Active workspace channel')}</p>
+            </div>
+          </div>
+          <span class="text-[11px] text-slate-400 flex-shrink-0 ml-2">${msgs.length}</span>
         </div>
-      `).join('') || '<div class="muted">No Decision Cards yet.</div>';
+      `;
 
-      // 8. Sub-Agent Deliverables Gallery (PRs, Google Docs, Drive files)
-      const allArts = snapshot.artifacts || [];
-      const seenRefs = new Set();
-      const uniqueArts = allArts.filter(a => {
-        if (seenRefs.has(a.ref)) return false;
-        seenRefs.add(a.ref);
-        return true;
+      if (agents.length === 0) {
+        rosterHtml += `
+          <div class="p-4 text-center rounded-2xl bg-slate-50/70 border border-dashed border-slate-200 mt-2">
+            <p class="text-xs text-slate-500 font-medium">No agents invited yet</p>
+            <p class="text-[11px] text-slate-400 mt-0.5">Tap Invite above to generate a prompt for Antigravity or Muse.</p>
+          </div>
+        `;
+      }
+
+      agents.forEach(a => {
+        const isAgy = a.actorId === 'agy';
+        const badgeBg = isAgy ? 'bg-orange-100 text-brand-coral ring-orange-200' : 'bg-violet-100 text-violet-600 ring-violet-200';
+        const initials = (a.actorName || a.actorId || 'A').slice(0, 2).toUpperCase();
+        rosterHtml += `
+          <div onclick="insertTag('@${esc(a.actorId)} ')" class="p-3 rounded-2xl hover:bg-slate-50 transition cursor-pointer flex items-center justify-between group">
+            <div class="flex items-center space-x-3 min-w-0">
+              <div class="relative flex-shrink-0">
+                <div class="w-10 h-10 rounded-full ${badgeBg} flex items-center justify-center font-semibold text-xs ring-1">${esc(initials)}</div>
+                <span class="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-orange-400 rounded-full flex items-center justify-center text-[8px] text-white ring-2 ring-white">✦</span>
+              </div>
+              <div class="min-w-0">
+                <div class="flex items-center space-x-1.5">
+                  <p class="text-sm font-medium text-slate-800 truncate">${esc(a.actorName || a.actorId)}</p>
+                  <span class="text-[10px] px-1.5 bg-slate-100 text-slate-500 rounded">AI</span>
+                </div>
+                <p class="text-xs text-slate-400 truncate">Tap to @${esc(a.actorId)} in chat</p>
+              </div>
+            </div>
+            <button onclick="revokeAgent(event, '${esc(a.actorId)}')" title="Revoke access" class="opacity-60 hover:opacity-100 text-[10px] text-slate-400 hover:text-rose-600 px-2 py-1 rounded-full hover:bg-rose-50 transition">Revoke</button>
+          </div>
+        `;
       });
-      document.getElementById('artifacts-gallery').innerHTML = uniqueArts.length
-        ? `<div class="flex wrap">${uniqueArts.map(renderArtifactChip).join('')}</div>`
-        : '<div class="muted">No PR or Google Drive/Doc deliverables yet.</div>';
+      document.getElementById('sidebar-roster').innerHTML = rosterHtml;
 
-      // 9. SSE Event Log
-      document.getElementById('events-list').innerHTML = (snapshot.events || []).map(e => `
-        <div style="padding:3px 0; border-bottom:1px solid var(--border);">
-          <span class="muted">#${e.seq}</span>
-          <strong style="color:var(--primary)">${esc(e.type)}</strong>
-          <span class="muted">by @${esc(e.actor)} · ${esc(e.entityId)}</span>
+      // Chat Stream
+      const filteredMsgs = query ? msgs.filter(m => (m.body + ' ' + m.author).toLowerCase().includes(query)) : msgs;
+      let chatHtml = `
+        <div class="flex justify-center">
+          <span class="text-[11px] font-medium text-slate-400 bg-slate-50 border border-slate-100 px-3 py-1 rounded-full">
+            Today · Synchronized workspace
+          </span>
+        </div>
+      `;
+
+      filteredMsgs.forEach(m => {
+        const isHuman = m.authorKind === 'human';
+        const time = new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const reads = m.readBy || [];
+        const readPills = reads.map(r => {
+          const icon = r.ack ? (r.emoji || '✅') : '👀';
+          const title = `${r.actorName || r.actorId} ${r.ack ? 'acknowledged' : 'read'} at ${new Date(r.readAt).toLocaleTimeString()}`;
+          return `<span title="${esc(title)}" class="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full ${r.ack ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/70' : 'bg-slate-100 text-slate-500'}">${esc(icon)} @${esc(r.actorId)}</span>`;
+        }).join('');
+
+        if (isHuman) {
+          chatHtml += `
+            <div class="flex justify-end items-end space-x-2">
+              <div class="flex flex-col items-end max-w-xl">
+                <div class="bg-white border border-slate-200/80 rounded-2xl rounded-tr-sm px-4 py-3 shadow-bubble text-slate-800 text-sm leading-relaxed whitespace-pre-wrap">${esc(m.body)}</div>
+                <div class="flex flex-wrap items-center justify-end gap-1.5 mt-1 mr-1">
+                  ${readPills}
+                  <span class="text-[10px] text-slate-400">${time}</span>
+                </div>
+              </div>
+              <div class="w-7 h-7 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center text-[10px] font-semibold mb-4 flex-shrink-0">DD</div>
+            </div>
+          `;
+        } else {
+          const isAgy = m.authorId === 'agy';
+          const avatarStyle = isAgy ? 'bg-brand-coral text-white' : 'bg-violet-500 text-white';
+          const bubbleStyle = isAgy ? 'bg-brand-peachBg border-brand-borderSubtle' : 'bg-violet-50/50 border-violet-100';
+          const nameStyle = isAgy ? 'text-brand-coral' : 'text-violet-700';
+          chatHtml += `
+            <div class="flex items-start space-x-3 max-w-2xl">
+              <div class="w-8 h-8 rounded-full ${avatarStyle} flex items-center justify-center flex-shrink-0 shadow-sm mt-0.5 text-xs font-bold">
+                ${esc((m.author || 'A').slice(0, 1).toUpperCase())}
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="${bubbleStyle} border rounded-2xl rounded-tl-sm p-4 text-slate-800 text-sm leading-relaxed shadow-sm">
+                  <div class="flex items-center space-x-2 mb-1.5">
+                    <span class="font-semibold text-xs ${nameStyle}">${esc(m.author)}</span>
+                    <span class="text-[10px] text-slate-400">${time}</span>
+                  </div>
+                  <div class="text-slate-700 whitespace-pre-wrap">${esc(m.body)}</div>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 mt-1 pl-1 text-slate-400 text-[11px]">
+                  <button onclick="ackMsg('${esc(m.id)}', '✅')" class="hover:text-emerald-600 transition">✓ Ack</button>
+                  <button onclick="copyText(${JSON.stringify(m.body)})" class="hover:text-slate-600 transition">Copy</button>
+                  ${readPills}
+                </div>
+              </div>
+            </div>
+          `;
+        }
+      });
+
+      // Inline pending decision cards
+      const openCards = cards.filter(c => c.status === 'open');
+      openCards.forEach(c => {
+        chatHtml += `
+          <div class="max-w-xl mx-auto bg-orange-50/70 border border-orange-200/70 rounded-2xl p-4 shadow-sm">
+            <div class="flex items-center justify-between gap-2 mb-2">
+              <span class="text-xs font-semibold text-brand-coral">Decision Gate</span>
+              <span class="text-[10px] font-mono text-slate-400">pin ${esc(c.pin.value.slice(0, 7))}</span>
+            </div>
+            <p class="text-sm text-slate-800 font-medium mb-3">${esc(c.prompt)}</p>
+            ${c.diffPreview ? `<pre class="mb-3 bg-white border border-slate-200/70 p-2.5 rounded-xl text-[11px] overflow-x-auto text-slate-600">${esc(c.diffPreview)}</pre>` : ''}
+            <div class="flex flex-wrap gap-2">
+              <button onclick="handleAnswerCard('${c.id}', 'approve', '${c.pin.value}')" class="px-3.5 py-1.5 rounded-full bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold transition">Approve</button>
+              <button onclick="handleAnswerCard('${c.id}', 'approve_with_change', '${c.pin.value}')" class="px-3.5 py-1.5 rounded-full bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-medium transition">With Change</button>
+              <button onclick="handleAnswerCard('${c.id}', 'reject', '${c.pin.value}')" class="px-3.5 py-1.5 rounded-full bg-white border border-slate-200 hover:text-rose-600 text-slate-500 text-xs font-medium transition">Reject</button>
+            </div>
+          </div>
+        `;
+      });
+
+      // Inline recent PR & Doc deliverables
+      artifacts.slice(-3).forEach(a => {
+        const icon = a.kind === 'pr' ? 'PR' : (a.kind === 'gdoc' ? 'Doc' : 'File');
+        chatHtml += `
+          <div class="max-w-xl ml-11 bg-slate-50 border border-slate-200/70 rounded-2xl px-4 py-3 flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600">${esc(icon)}</span>
+                <span class="text-xs font-semibold text-slate-800 truncate">${esc(a.label || a.ref)}</span>
+              </div>
+            </div>
+            <a href="${esc(a.ref)}" target="_blank" class="text-xs font-semibold text-brand-coral hover:underline flex-shrink-0">Open ↗</a>
+          </div>
+        `;
+      });
+
+      const chatEl = document.getElementById('chat-stream');
+      chatEl.innerHTML = chatHtml;
+      chatEl.scrollTop = chatEl.scrollHeight;
+
+      // Badges
+      const pendingTasks = items.filter(i => i.status !== 'done');
+      ['tasks-badge', 'side-tasks-badge'].forEach(id => {
+        const el = document.getElementById(id);
+        el.textContent = pendingTasks.length;
+        el.classList.toggle('hidden', pendingTasks.length === 0);
+      });
+      ['cards-badge', 'side-cards-badge'].forEach(id => {
+        const el = document.getElementById(id);
+        el.textContent = openCards.length;
+        el.classList.toggle('hidden', openCards.length === 0);
+      });
+
+      // Backlog List
+      const filteredItems = query ? items.filter(i => (i.title + ' ' + (i.body || '')).toLowerCase().includes(query)) : items;
+      document.getElementById('task-list').innerHTML = filteredItems.map(item => `
+        <div class="p-3.5 rounded-2xl bg-slate-50/70 hover:bg-slate-50 border border-slate-100 flex items-start gap-3 transition">
+          <input type="checkbox" ${item.status === 'done' ? 'checked' : ''} onchange="toggleTask('${item.id}', '${item.status}')" class="mt-1 rounded text-brand-coral focus:ring-orange-200 border-slate-300 cursor-pointer" />
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-medium text-slate-800 ${item.status === 'done' ? 'line-through text-slate-400' : ''}">${esc(item.title)}</div>
+            ${item.body ? `<p class="text-xs text-slate-500 mt-0.5">${esc(item.body)}</p>` : ''}
+            <div class="flex flex-wrap gap-1.5 mt-2">
+              <span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600">${esc(item.priority)}</span>
+              <span class="text-[10px] font-medium px-2 py-0.5 rounded-full ${item.status === 'done' ? 'bg-emerald-50 text-emerald-700' : 'bg-orange-50 text-brand-coral'}">${esc(item.status)}</span>
+              ${item.assigneeId ? `<span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-500">@${esc(item.assigneeId)}</span>` : ''}
+            </div>
+          </div>
+        </div>
+      `).join('') || `<div class="text-center text-xs text-slate-400 py-10">No tasks in backlog.</div>`;
+
+      // Decisions & Runs List
+      document.getElementById('runs-cards-list').innerHTML = openCards.map(c => `
+        <div class="p-4 rounded-2xl bg-orange-50/60 border border-orange-200/70">
+          <div class="text-xs font-semibold text-brand-coral mb-1">Pending Decision</div>
+          <div class="text-sm font-medium text-slate-800 mb-3">${esc(c.prompt)}</div>
+          <div class="flex gap-2">
+            <button onclick="handleAnswerCard('${c.id}', 'approve', '${c.pin.value}')" class="px-3.5 py-1.5 rounded-full bg-brand-coral text-white text-xs font-semibold">Approve</button>
+            <button onclick="handleAnswerCard('${c.id}', 'reject', '${c.pin.value}')" class="px-3.5 py-1.5 rounded-full bg-white border border-slate-200 text-slate-600 text-xs font-medium">Reject</button>
+          </div>
         </div>
       `).join('');
+
+      document.getElementById('runs-list').innerHTML = runs.map(r => `
+        <div class="p-4 rounded-2xl bg-slate-50/70 border border-slate-100">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-semibold text-slate-800">${esc(r.id)} · @${esc(r.ownerAgent)}</span>
+            <span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600">${esc(r.status)}</span>
+          </div>
+          <div class="space-y-1.5">
+            ${(r.steps || []).map(s => `
+              <div class="flex items-center justify-between text-xs text-slate-600 bg-white px-3 py-2 rounded-xl border border-slate-100">
+                <span>${s.idx}. ${esc(s.title)}</span>
+                <span class="text-[10px] ${s.status === 'done' ? 'text-emerald-600 font-semibold' : 'text-slate-400'}">${esc(s.status)}</span>
+              </div>
+            `).join('') || `<div class="text-xs text-slate-400">Waiting for plan...</div>`}
+          </div>
+        </div>
+      `).join('') || `<div class="text-center text-xs text-slate-400 py-10">No active runs.</div>`;
     }
 
-    (async () => {
-      await initStarterTokenIfNeeded();
-      await loadSnapshot();
-      connectSSE();
-    })();
+    loadSnapshot();
+    connectSSE();
+    renderPromptPreview();
   </script>
 </body>
 </html>

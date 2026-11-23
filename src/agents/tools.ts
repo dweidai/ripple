@@ -9,6 +9,13 @@ const GDRIVE_BIN = '/opt/antigravity/bin/gdrive';
 const GDOCS_BIN = '/opt/antigravity/bin/gdocs';
 const DEFAULT_REPO = process.env.RIPPLE_GITHUB_REPO ?? 'dweidai/ripple';
 
+function assertValidRepo(repo: string): string {
+  if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repo)) {
+    throw new Error(`Invalid GitHub repository format: ${repo}`);
+  }
+  return repo;
+}
+
 function getPluginEnv(): NodeJS.ProcessEnv {
   return {
     ...process.env,
@@ -60,7 +67,8 @@ export interface GoogleDocResult {
   summary: string;
 }
 
-export async function inspectGitHubRepo(repo = DEFAULT_REPO): Promise<GitHubStatusResult> {
+export async function inspectGitHubRepo(repoInput = DEFAULT_REPO): Promise<GitHubStatusResult> {
+  const repo = assertValidRepo(repoInput);
   const [repoRes, prRes, refRes] = await Promise.all([
     runCli(GH_BIN, ['repo', 'view', repo, '--json', 'nameWithOwner,url,defaultBranchRef']),
     runCli(GH_BIN, ['pr', 'list', '--repo', repo, '--limit', '10', '--json', 'number,title,url,headRefName,state']),
@@ -90,7 +98,7 @@ export async function createGitHubPullRequest(input: {
   fileContent?: string;
   commitMessage?: string;
 }): Promise<GitHubPrResult> {
-  const repo = input.repo ?? DEFAULT_REPO;
+  const repo = assertValidRepo(input.repo ?? DEFAULT_REPO);
   const slug = input.title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')

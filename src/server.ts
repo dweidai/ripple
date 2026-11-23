@@ -169,7 +169,29 @@ export function createRippleApp(
 ) {
   const app = new Hono<Env>();
 
-  app.use('*', cors());
+  const allowedOrigins = (process.env.RIPPLE_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  app.use('*', async (c, next) => {
+    await next();
+    c.header('X-Content-Type-Options', 'nosniff');
+    c.header('X-Frame-Options', 'DENY');
+    c.header('Referrer-Policy', 'no-referrer');
+  });
+
+  app.use(
+    '*',
+    cors({
+      origin: (origin) => {
+        if (!origin) return '';
+        if (allowedOrigins.includes(origin)) return origin;
+        if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) return origin;
+        return '';
+      },
+    }),
+  );
 
   app.onError((err, c) => {
     if (err instanceof RippleError) {
@@ -201,8 +223,9 @@ export function createRippleApp(
     }
     const base = resolvePublicUrl(c, publicUrl);
     const wsId = whoami?.wsId ?? 'ws_default';
-    const tokens = await engine.store.listTokens(wsId);
-    const participants = tokens.map(recordToPrincipal);
+    const participants = whoami
+      ? (await engine.store.listTokens(wsId)).map(recordToPrincipal)
+      : [];
 
     return c.json({
       service: 'ripple',
@@ -242,43 +265,22 @@ export function createRippleApp(
       whoami = null;
     }
     const base = resolvePublicUrl(c, publicUrl);
-    const tokens = await engine.store.listTokens(whoami?.wsId ?? wsId);
+    const participants = whoami
+      ? (await engine.store.listTokens(whoami.wsId)).map(recordToPrincipal)
+      : [];
     const md = renderDoorwayMarkdown({
       base,
       wsId: whoami?.wsId ?? wsId,
       token: queryToken,
       whoami,
-      participants: tokens.map(recordToPrincipal),
+      participants,
     });
     return c.text(md, 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
   };
   app.get('/w/:wsId/agent.md', handleAgentMd);
   app.get('/agent.md', handleAgentMd);
 
-  // Public starter / phone auto-login helper so opening the URL on a phone logs straight in as David (@dweidai)
-  app.get('/api/v1/demo-actors', async (c) => {
-    const wsId = c.req.query('ws_id') || 'ws_default';
-    const tokens = await engine.store.listTokens(wsId);
-    const base = resolvePublicUrl(c, publicUrl);
-    const actors = tokens.map((t) => ({
-      actorId: t.actorId,
-      actorName: t.actorName,
-      kind: t.kind,
-      roles: t.roles,
-      parentAgentId: t.parentAgentId,
-      avatarColor: t.avatarColor,
-      statusText: t.statusText,
-      online: t.online ?? true,
-      rawToken: t.rawToken,
-    }));
-    const defaultHuman = actors.find((a) => a.kind === 'human') ?? actors[0];
-    return c.json({
-      publicUrl: base,
-      defaultToken: defaultHuman?.rawToken ?? 'rpl_human_dev_token',
-      defaultActor: defaultHuman,
-      actors,
-    });
-  });
+  // /api/v1/demo-actors removed for security (tokens must never be exposed unauthenticated)
 
   // Serve Web UI
   const possibleHtmlPaths = [
@@ -420,10 +422,7 @@ export function createRippleApp(
       flows: flowsWithHistory,
       messages: workspaceMessages,
       events: events.reverse(),
-      agents: tokens.map((t) => ({
-        ...recordToPrincipal(t),
-        rawToken: t.rawToken,
-      })),
+      agents: tokens.map((t) => recordToPrincipal(t)),
     });
   });
 
@@ -786,8 +785,11 @@ export function createRippleApp(
   // Scoped Threads & Workspace Dialogue
   api.get('/threads/:scopeKind/:scopeId', async (c) => {
     const p = c.get('principal');
+    const scopeKind = c.req.param('scopeKind');
+    const scopeId = c.req.param('scopeId');
+    await engine.markThreadRead(p, scopeKind, scopeId);
     return c.json(
-      await engine.store.listThreadMessages(p.wsId, c.req.param('scopeKind'), c.req.param('scopeId')),
+      await engine.store.listThreadMessages(p.wsId, scopeKind, scopeId),
     );
   });
   api.post('/threads/:scopeKind/:scopeId', async (c) => {
@@ -806,6 +808,36 @@ export function createRippleApp(
       }),
       201,
     );
+  });
+  api.post('/threads/:scopeKind/:scopeId/messages/:msgId/ack', async (c) => {
+    const p = c.get('principal');
+    const body = await c.req.json().catch(() => ({}));
+    const updated = await engine.ackMessage(p, {
+      scopeKind: c.req.param('scopeKind'),
+      scopeId: c.req.param('scopeId'),
+      msgId: c.req.param('msgId'),
+      emoji: body.emoji,
+      ack: body.ack ?? true,
+    });
+    return c.json(updated);
+  });
+  api.get('/audit/reads', async (c) => {
+    const p = c.get('principal');
+    const [msgs, events] = await Promise.all([
+      engine.store.listThreadMessages(p.wsId, 'workspace', 'main'),
+      engine.store.listEvents(p.wsId, 0, 100),
+    ]);
+    const readEvents = events.filter((e) => e.type === 'thread.read' || e.type === 'thread.ack');
+    return c.json({
+      messages: msgs.map((m) => ({
+        id: m.id,
+        actorId: m.actorId,
+        author: m.author,
+        createdAt: m.createdAt,
+        readBy: m.readBy ?? [],
+      })),
+      auditEvents: readEvents,
+    });
   });
 
   // Real GitHub (gh) and Google Drive/Docs (gdrive/gdocs) integration endpoints
@@ -887,7 +919,10 @@ export function createRippleApp(
   // SSE stream with Last-Event-ID gapless replay
   api.get('/events', async (c) => {
     const p = c.get('principal');
-    const lastId = Number(c.req.header('Last-Event-ID') ?? c.req.query('after') ?? 0);
+    const afterParam = c.req.query('after');
+    const lastIdHeader = c.req.header('Last-Event-ID');
+    const skipReplay = afterParam === 'latest' && !lastIdHeader;
+    const lastId = skipReplay ? 0 : Number(lastIdHeader ?? afterParam ?? 0);
     const encoder = new TextEncoder();
 
     const stream = new ReadableStream({
@@ -895,8 +930,12 @@ export function createRippleApp(
         const send = (ev: { seq: number; type: string }) => {
           controller.enqueue(encoder.encode(`id: ${ev.seq}\nevent: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`));
         };
-        const missed = await engine.store.listEvents(p.wsId, lastId, 100);
-        for (const ev of missed) send(ev);
+        if (!skipReplay) {
+          const missed = await engine.store.listEvents(p.wsId, lastId, 100);
+          for (const ev of missed) send(ev);
+        } else {
+          controller.enqueue(encoder.encode(': connected\n\n'));
+        }
 
         const unsub = engine.store.subscribe(p.wsId, (ev) => send(ev));
         const ping = setInterval(() => {
@@ -905,7 +944,7 @@ export function createRippleApp(
           } catch {
             clearInterval(ping);
           }
-        }, 20_000);
+        }, 15_000);
 
         c.req.raw.signal.addEventListener('abort', () => {
           clearInterval(ping);
@@ -922,7 +961,8 @@ export function createRippleApp(
     return new Response(stream, {
       headers: {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no',
         Connection: 'keep-alive',
       },
     });

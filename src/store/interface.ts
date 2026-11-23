@@ -9,6 +9,7 @@ import type {
   Step,
   RippleEvent,
   ThreadMessage,
+  MessageReadReceipt,
 } from '../types.js';
 
 export interface TokenRecord extends Principal {
@@ -76,6 +77,7 @@ export interface Store {
   // Scoped Threads
   createThreadMessage(msg: ThreadMessage): Promise<ThreadMessage>;
   listThreadMessages(wsId: string, scopeKind: string, scopeId: string): Promise<ThreadMessage[]>;
+  recordMessageRead(wsId: string, msgId: string, receipt: MessageReadReceipt): Promise<ThreadMessage | undefined>;
 
   // Append-only Event Log & Fan-out
   appendEvent(event: Omit<RippleEvent, 'seq'>): Promise<RippleEvent>;

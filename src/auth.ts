@@ -75,7 +75,6 @@ export class AuthService {
     await this.store.saveToken({
       ...principal,
       tokenHash: hashToken(rawToken),
-      rawToken,
     });
     return { rawToken, principal };
   }

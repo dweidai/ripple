@@ -11,6 +11,7 @@ import type {
   Step,
   RippleEvent,
   ThreadMessage,
+  MessageReadReceipt,
 } from '../types.js';
 import type { EventListener, Store, TokenRecord } from './interface.js';
 
@@ -350,15 +351,48 @@ export class MemoryStore implements Store {
   }
 
   async createThreadMessage(msg: ThreadMessage): Promise<ThreadMessage> {
-    this.threads.push({ ...msg, mentions: [...(msg.mentions ?? [])] });
+    const copy: ThreadMessage = {
+      ...msg,
+      mentions: [...(msg.mentions ?? [])],
+      readBy: [...(msg.readBy ?? [])],
+    };
+    this.threads.push(copy);
     this.schedulePersist();
-    return { ...msg, mentions: [...(msg.mentions ?? [])] };
+    return { ...copy, mentions: [...copy.mentions], readBy: [...(copy.readBy ?? [])] };
   }
 
   async listThreadMessages(wsId: string, scopeKind: string, scopeId: string): Promise<ThreadMessage[]> {
     return this.threads
       .filter((m) => m.wsId === wsId && m.scopeKind === scopeKind && m.scopeId === scopeId)
-      .map((m) => ({ ...m, mentions: [...(m.mentions ?? [])] }));
+      .map((m) => ({
+        ...m,
+        mentions: [...(m.mentions ?? [])],
+        readBy: (m.readBy ?? []).map((r) => ({ ...r })),
+      }));
+  }
+
+  async recordMessageRead(wsId: string, msgId: string, receipt: MessageReadReceipt): Promise<ThreadMessage | undefined> {
+    const msg = this.threads.find((m) => m.wsId === wsId && m.id === msgId);
+    if (!msg) return undefined;
+    if (!msg.readBy) msg.readBy = [];
+    const idx = msg.readBy.findIndex((r) => r.actorId === receipt.actorId);
+    if (idx >= 0) {
+      const prev = msg.readBy[idx];
+      msg.readBy[idx] = {
+        ...prev,
+        ...receipt,
+        ack: receipt.ack ?? prev.ack,
+        emoji: receipt.emoji ?? prev.emoji,
+      };
+    } else {
+      msg.readBy.push({ ...receipt });
+    }
+    this.schedulePersist();
+    return {
+      ...msg,
+      mentions: [...(msg.mentions ?? [])],
+      readBy: msg.readBy.map((r) => ({ ...r })),
+    };
   }
 
   async appendEvent(event: Omit<RippleEvent, 'seq'>): Promise<RippleEvent> {

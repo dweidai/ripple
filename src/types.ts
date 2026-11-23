@@ -184,6 +184,15 @@ export interface FlowTemplate {
   createdAt: string;
 }
 
+export interface MessageReadReceipt {
+  actorId: string;
+  actorName: string;
+  kind: PrincipalKind;
+  readAt: string;
+  ack?: boolean;
+  emoji?: string;
+}
+
 export interface ThreadMessage {
   id: string;
   wsId: string;
@@ -199,6 +208,7 @@ export interface ThreadMessage {
   itemId?: string;
   hopCount: number;
   steerId?: string;
+  readBy?: MessageReadReceipt[];
   createdAt: string;
 }
 
