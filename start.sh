@@ -28,7 +28,7 @@ done
 # Start Cloudflare Tunnel
 echo "[start.sh] Starting Cloudflare Tunnel..."
 rm -f .ripple-data/cloudflared.log
-/home/antigravity/.local/bin/cloudflared tunnel --url http://127.0.0.1:8787 --no-autoupdate > .ripple-data/cloudflared.log 2>&1 &
+/home/antigravity/.local/bin/cloudflared tunnel --protocol http2 --url http://127.0.0.1:8787 --no-autoupdate > .ripple-data/cloudflared.log 2>&1 &
 TUNNEL_PID=$!
 
 # Extract trycloudflare URL
