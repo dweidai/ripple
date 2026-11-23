@@ -13,10 +13,13 @@ function ok(data: unknown) {
 }
 
 function fail(err: unknown) {
+  if (!(err instanceof RippleError)) {
+    console.error('[ripple-mcp] tool error:', err);
+  }
   const payload =
     err instanceof RippleError
       ? err.toJSON()
-      : { error: 'internal_error', message: err instanceof Error ? err.message : String(err) };
+      : { error: 'internal_error', message: 'Internal server error' };
   return {
     isError: true,
     content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }],
@@ -423,6 +426,7 @@ export function createRippleMcpServer(engine: RippleEngine, principal: Principal
     'Spawn a sub-agent and child Run under a parent Run (up to depth 3). Optionally mints/registers the sub-agent identity and posts a status notice in the parent run thread.',
     {
       parent_run_id: z.string(),
+      epoch: z.number().int().positive(),
       title: z.string(),
       goal: z.string().optional(),
       subagent_id: z.string().optional(),
@@ -443,6 +447,7 @@ export function createRippleMcpServer(engine: RippleEngine, principal: Principal
       try {
         return ok(
           await engine.spawnSubrun(principal, args.parent_run_id, {
+            epoch: args.epoch,
             title: args.title,
             goal: args.goal,
             subagentId: args.subagent_id,
@@ -465,7 +470,7 @@ export function createRippleMcpServer(engine: RippleEngine, principal: Principal
     'Report completion (or failure) of a sub-agent run or primary run, attach PR/Drive/Google Doc artifacts, update the linked backlog item, and post a structured report back to the parent run and workspace dialogue.',
     {
       run_id: z.string(),
-      epoch: z.number().int().positive().optional(),
+      epoch: z.number().int().positive(),
       summary: z.string(),
       status: z.enum(['done', 'failed']).optional(),
       artifacts: z

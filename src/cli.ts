@@ -116,6 +116,7 @@ switch (cmd) {
     const parentRunId = args[0];
     const stepsRaw = flag(args, '--steps');
     await req('POST', `/api/v1/runs/${parentRunId}/subruns`, {
+      epoch: Number(flag(args, '--epoch') ?? 1),
       title: flag(args, '--title') ?? args[1] ?? 'Sub-agent task',
       goal: flag(args, '--goal'),
       subagentId: flag(args, '--subagent') ?? flag(args, '--agent'),
@@ -132,7 +133,7 @@ switch (cmd) {
     const runId = args[0];
     const artifactsRaw = flag(args, '--artifacts');
     await req('POST', `/api/v1/runs/${runId}/report`, {
-      epoch: flag(args, '--epoch') ? Number(flag(args, '--epoch')) : undefined,
+      epoch: Number(flag(args, '--epoch') ?? 1),
       summary: flag(args, '--summary') ?? args[1] ?? 'Sub-agent task completed',
       status: flag(args, '--status') ?? 'done',
       artifacts: artifactsRaw ? JSON.parse(artifactsRaw) : undefined,

@@ -1,5 +1,11 @@
 import crypto from 'node:crypto';
-import { generateToken, hashToken, recordToPrincipal } from './auth.js';
+import {
+  assertHuman,
+  assertValidActorId,
+  generateToken,
+  hashToken,
+  recordToPrincipal,
+} from './auth.js';
 import { Errors } from './errors.js';
 import type { Store } from './store/interface.js';
 import {
@@ -30,8 +36,38 @@ import {
   type WorkspaceContext,
 } from './types.js';
 
+const VALID_ITEM_STATUSES = new Set<ItemStatus>(['open', 'active', 'done', 'dropped']);
+const VALID_PIN_VALUE_RE = /^[a-zA-Z0-9._:/?&=%+-]{1,512}$/;
+const URI_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+const MAX_SUBAGENTS_PER_AGENT = 10;
+const MAX_SUBRUNS_PER_ROOT = 25;
+const DEFAULT_SUBAGENT_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function assertValidPinValue(value: string, field = 'pin.value'): void {
+  if (typeof value !== 'string' || !VALID_PIN_VALUE_RE.test(value)) {
+    throw Errors.badRequest(
+      `Invalid ${field}: must match ${VALID_PIN_VALUE_RE.source}`,
+    );
+  }
+}
+
+export function assertSafeHttpUrl(raw: string, field: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw Errors.badRequest(`Invalid URL in ${field}`);
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw Errors.badRequest(
+      `Unsupported URL scheme in ${field}: only http and https are allowed`,
+    );
+  }
+  return raw;
+}
+
 function uid(prefix: string): string {
-  return `${prefix}_${crypto.randomBytes(5).toString('hex')}`;
+  return `${prefix}_${crypto.randomBytes(16).toString('hex')}`;
 }
 
 export function extractMentions(body: string): string[] {
@@ -75,6 +111,19 @@ export class RippleEngine {
     if (TERMINAL_RUN_STATUSES.has(run.status)) {
       throw Errors.fenced(sentEpoch, run.epoch);
     }
+  }
+
+  private async assertRunOwnerOrHuman(p: Principal, run: Run): Promise<void> {
+    if (p.kind === 'human') return;
+    if (p.actorId === run.ownerAgent) return;
+    let cursor = run.parentRunId;
+    for (let hop = 0; hop < 4 && cursor; hop++) {
+      const ancestor = await this.store.getRun(cursor);
+      if (!ancestor || ancestor.wsId !== p.wsId) break;
+      if (ancestor.ownerAgent === p.actorId) return;
+      cursor = ancestor.parentRunId;
+    }
+    throw Errors.forbidden(`Actor '${p.actorId}' does not own run '${run.id}'`);
   }
 
   // ---------- Profile & Identity ----------
@@ -125,6 +174,15 @@ export class RippleEngine {
     if (!input.title || !String(input.title).trim()) {
       throw Errors.badRequest('Item title is required');
     }
+    if (input.assigneeId) {
+      assertValidActorId(input.assigneeId, 'assigneeId');
+    }
+    if (input.parentItemId) {
+      const parentItem = await this.store.getItem(input.parentItemId);
+      if (!parentItem || parentItem.wsId !== p.wsId) {
+        throw Errors.notFound('Item', input.parentItemId);
+      }
+    }
     const now = new Date().toISOString();
     const rawPriority = input.priority ?? 'P1';
     const priority = typeof rawPriority === 'number' ? `P${rawPriority}` : String(rawPriority);
@@ -136,7 +194,7 @@ export class RippleEngine {
       priority,
       version: 1,
       status: 'open',
-      createdBy: input.createdBy ?? p.actorId,
+      createdBy: p.actorId,
       assigneeId: input.assigneeId || undefined,
       parentItemId: input.parentItemId || undefined,
       tags: Array.isArray(input.tags) ? [...new Set(input.tags.map((t) => String(t).trim()).filter(Boolean))] : [],
@@ -172,6 +230,31 @@ export class RippleEngine {
   ): Promise<Item> {
     const item = await this.store.getItem(itemId);
     if (!item || item.wsId !== p.wsId) throw Errors.notFound('Item', itemId);
+
+    if (patch.status !== undefined && !VALID_ITEM_STATUSES.has(patch.status)) {
+      throw Errors.badRequest(`Invalid item status '${String(patch.status)}'`);
+    }
+    if (patch.assigneeId !== undefined && patch.assigneeId !== '') {
+      assertValidActorId(patch.assigneeId, 'assigneeId');
+    }
+    if (patch.parentItemId !== undefined && patch.parentItemId !== '') {
+      if (patch.parentItemId === itemId) {
+        throw Errors.badRequest('Item cannot be its own parent');
+      }
+      const parentItem = await this.store.getItem(patch.parentItemId);
+      if (!parentItem || parentItem.wsId !== p.wsId) {
+        throw Errors.notFound('Item', patch.parentItemId);
+      }
+    }
+    if (patch.linkedRunId !== undefined && patch.linkedRunId !== '') {
+      const linkedRun = await this.store.getRun(patch.linkedRunId);
+      if (!linkedRun || linkedRun.wsId !== p.wsId) {
+        throw Errors.notFound('Run', patch.linkedRunId);
+      }
+    }
+    if (patch.resultUrl !== undefined && patch.resultUrl !== '') {
+      assertSafeHttpUrl(patch.resultUrl, 'resultUrl');
+    }
 
     const now = new Date().toISOString();
     if (patch.title !== undefined) item.title = String(patch.title).trim() || item.title;
@@ -251,6 +334,7 @@ export class RippleEngine {
   ): Promise<{ run: Run; steps: Step[] }> {
     const run = await this.store.getRun(runId);
     if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', runId);
+    await this.assertRunOwnerOrHuman(p, run);
     this.assertEpoch(run, input.epoch);
 
     const now = new Date().toISOString();
@@ -295,6 +379,7 @@ export class RippleEngine {
   ): Promise<{ run: Run; step: Step }> {
     const run = await this.store.getRun(runId);
     if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', runId);
+    await this.assertRunOwnerOrHuman(p, run);
     this.assertEpoch(run, input.epoch);
 
     const steps = await this.store.listSteps(run.id, run.planVersion);
@@ -353,12 +438,21 @@ export class RippleEngine {
   ): Promise<{ artifact: Artifact; staledCards: Card[]; replacementCards: Card[] }> {
     const run = await this.store.getRun(runId);
     if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', runId);
+    await this.assertRunOwnerOrHuman(p, run);
     this.assertEpoch(run, input.epoch);
+
+    if (input.url !== undefined && input.url !== '') {
+      assertSafeHttpUrl(input.url, 'url');
+    }
+    if (input.kind === 'url' || URI_SCHEME_RE.test(input.ref)) {
+      assertSafeHttpUrl(input.ref, 'ref');
+    }
 
     const now = new Date().toISOString();
     const hash = input.contentHash ?? input.ref;
+    assertValidPinValue(hash, 'pin.value');
     const inferredUrl =
-      input.url ??
+      input.url ||
       (input.ref.startsWith('http://') || input.ref.startsWith('https://') ? input.ref : undefined);
     const artifact: Artifact = {
       id: uid('art'),
@@ -457,6 +551,7 @@ export class RippleEngine {
       pinPlanVersion?: number;
     },
   ): Promise<Steer> {
+    assertHuman(p, 'queue steers');
     const run = await this.store.getRun(runId);
     if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', runId);
     if (TERMINAL_RUN_STATUSES.has(run.status)) {
@@ -494,6 +589,7 @@ export class RippleEngine {
   ): Promise<CheckpointResponse> {
     const run = await this.store.getRun(runId);
     if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', runId);
+    await this.assertRunOwnerOrHuman(p, run);
     this.assertEpoch(run, input.epoch);
 
     const now = new Date().toISOString();
@@ -536,6 +632,7 @@ export class RippleEngine {
   async heartbeat(p: Principal, runId: string, epoch: number): Promise<HeartbeatResponse> {
     const run = await this.store.getRun(runId);
     if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', runId);
+    await this.assertRunOwnerOrHuman(p, run);
     this.assertEpoch(run, epoch);
 
     const now = new Date().toISOString();
@@ -571,6 +668,7 @@ export class RippleEngine {
     if (!steer) throw Errors.notFound('Steer', steerId);
     const run = await this.store.getRun(steer.runId);
     if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', steer.runId);
+    await this.assertRunOwnerOrHuman(p, run);
 
     // Idempotent: already acked/rejected returns the recorded steer without duplicating events
     if (steer.status === 'acked' || steer.status === 'rejected') {
@@ -614,10 +712,35 @@ export class RippleEngine {
   ): Promise<Card> {
     const run = await this.store.getRun(runId);
     if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', runId);
+    await this.assertRunOwnerOrHuman(p, run);
     this.assertEpoch(run, input.epoch);
 
     const assignee: CardAssignee = input.assignee ?? { kind: 'user', id: run.sponsorHuman };
     const blocking = input.blocking ?? true;
+    const options =
+      input.options ?? (input.type === 'approve' ? ['approve', 'approve_with_change', 'reject'] : []);
+    const onExpire: CardOnExpire = input.onExpire ?? 'escalate';
+
+    if (input.expiresAt !== undefined) {
+      const expMs = new Date(input.expiresAt).getTime();
+      if (!Number.isFinite(expMs) || expMs <= Date.now()) {
+        throw Errors.badRequest('expiresAt must be a valid future ISO timestamp');
+      }
+    }
+
+    if (onExpire === 'default_option') {
+      if (input.type === 'approve' || assignee.kind !== 'agent') {
+        throw Errors.forbidden(
+          "onExpire 'default_option' is not allowed for approval or non-agent cards",
+        );
+      }
+      if (!input.defaultOption || !String(input.defaultOption).trim()) {
+        throw Errors.badRequest("defaultOption is required when onExpire is 'default_option'");
+      }
+      if (options.length > 0 && !options.includes(input.defaultOption)) {
+        throw Errors.badRequest('defaultOption must be one of the card options');
+      }
+    }
 
     // Wait-for graph cycle check when blocking on another agent
     if (blocking && assignee.kind === 'agent') {
@@ -633,6 +756,8 @@ export class RippleEngine {
     }
 
     const pin: Pin = input.pin ?? run.subjectPin ?? { kind: 'plan', value: `v${run.planVersion}` };
+    assertValidPinValue(pin.value, 'pin.value');
+
     const now = new Date().toISOString();
     const card: Card = {
       id: uid('c'),
@@ -641,14 +766,14 @@ export class RippleEngine {
       asker: run.ownerAgent,
       type: input.type,
       prompt: input.prompt,
-      options: input.options ?? (input.type === 'approve' ? ['approve', 'approve_with_change', 'reject'] : []),
+      options,
       diffPreview: input.diffPreview ?? '',
       pin,
       assignee,
       blocking,
       status: 'open',
       expiresAt: input.expiresAt,
-      onExpire: input.onExpire ?? 'escalate',
+      onExpire,
       defaultOption: input.defaultOption,
       dedupeKey: input.dedupeKey,
       createdAt: now,
@@ -682,14 +807,21 @@ export class RippleEngine {
     const card = await this.store.getCard(cardId);
     if (!card || card.wsId !== p.wsId) throw Errors.notFound('Card', cardId);
 
-    // Security: agents may not answer human/role-assigned cards
-    if (p.kind === 'agent' && card.assignee.kind !== 'agent') {
-      throw Errors.forbidden('Agents cannot answer human- or role-assigned cards');
+    // Security (H4): forbid self-answering and enforce exact assignee/role matching
+    if (p.actorId === card.asker) {
+      throw Errors.forbidden('Asker cannot answer their own card');
     }
-    if (card.assignee.kind === 'role' && !p.roles.includes(card.assignee.id) && p.kind === 'human') {
-      // allow if human has role; if no roles configured on principal, require role match
-      if (p.roles.length > 0) {
-        throw Errors.forbidden(`Requires role '${card.assignee.id}'`);
+    if (card.assignee.kind === 'agent') {
+      if (p.kind !== 'agent' || p.actorId !== card.assignee.id) {
+        throw Errors.forbidden(`Card is assigned to agent '${card.assignee.id}'`);
+      }
+    } else if (card.assignee.kind === 'user') {
+      if (p.kind !== 'human' || p.actorId !== card.assignee.id) {
+        throw Errors.forbidden(`Card is assigned to user '${card.assignee.id}'`);
+      }
+    } else if (card.assignee.kind === 'role') {
+      if (p.kind !== 'human' || !p.roles.includes(card.assignee.id)) {
+        throw Errors.forbidden(`Requires human with role '${card.assignee.id}'`);
       }
     }
 
@@ -806,6 +938,7 @@ export class RippleEngine {
 
   // ---------- Takeover, Cancel, Resume (Epoch Fencing) ----------
   async takeoverRun(p: Principal, runId: string): Promise<Run> {
+    assertHuman(p, 'take over runs');
     const run = await this.store.getRun(runId);
     if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', runId);
     run.epoch += 1;
@@ -818,6 +951,7 @@ export class RippleEngine {
   }
 
   async cancelRun(p: Principal, runId: string): Promise<Run> {
+    assertHuman(p, 'cancel runs');
     const run = await this.store.getRun(runId);
     if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', runId);
     run.epoch += 1;
@@ -830,6 +964,7 @@ export class RippleEngine {
   }
 
   async resumeRun(p: Principal, runId: string): Promise<Run> {
+    assertHuman(p, 'resume runs');
     const run = await this.store.getRun(runId);
     if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', runId);
     if (run.status !== 'stalled') {
@@ -875,6 +1010,7 @@ export class RippleEngine {
       retryMax?: number;
     },
   ): Promise<FlowTemplate> {
+    assertHuman(p, 'create flows');
     const flow: FlowTemplate = {
       id: uid('flow'),
       wsId: p.wsId,
@@ -893,6 +1029,7 @@ export class RippleEngine {
   }
 
   async triggerFlow(p: Principal, flowId: string): Promise<{ run: Run; steps: Step[] }> {
+    assertHuman(p, 'trigger flows');
     const flow = await this.store.getFlow(flowId);
     if (!flow || flow.wsId !== p.wsId) throw Errors.notFound('FlowTemplate', flowId);
 
@@ -937,6 +1074,7 @@ export class RippleEngine {
     p: Principal,
     parentRunId: string,
     input: {
+      epoch: number;
       title: string;
       goal?: string;
       subagentId?: string;
@@ -950,25 +1088,94 @@ export class RippleEngine {
   ): Promise<{ run: Run; steps: Step[]; subagent: Principal }> {
     const parent = await this.store.getRun(parentRunId);
     if (!parent || parent.wsId !== p.wsId) throw Errors.notFound('Run', parentRunId);
-    if (TERMINAL_RUN_STATUSES.has(parent.status)) {
-      throw Errors.fenced(parent.epoch, parent.epoch);
+    await this.assertRunOwnerOrHuman(p, parent);
+    if (typeof input.epoch !== 'number' || !Number.isInteger(input.epoch) || input.epoch < 1) {
+      throw Errors.badRequest('epoch is required and must be a positive integer');
     }
+    this.assertEpoch(parent, input.epoch);
 
     const parentDepth = parent.depth ?? 0;
     if (parentDepth >= 3) {
       throw Errors.badRequest('Maximum sub-run depth (3) reached');
     }
 
+    if (input.itemId) {
+      const item = await this.store.getItem(input.itemId);
+      if (!item || item.wsId !== p.wsId) {
+        throw Errors.notFound('Item', input.itemId);
+      }
+    }
+
+    // Walk parentRunId chain to find root run & rootOwnerAgent
+    let rootRun = parent;
+    for (let hop = 0; hop < 4 && rootRun.parentRunId; hop++) {
+      const ancestor = await this.store.getRun(rootRun.parentRunId);
+      if (!ancestor || ancestor.wsId !== p.wsId) break;
+      rootRun = ancestor;
+    }
+    const rootOwnerAgent = rootRun.ownerAgent;
+
     const subagentId =
       input.subagentId ||
-      `${parent.ownerAgent}-sub-${crypto.randomBytes(2).toString('hex')}`;
+      `${parent.ownerAgent}-sub-${crypto.randomBytes(4).toString('hex')}`;
+    if (input.subagentId !== undefined) {
+      assertValidActorId(subagentId, 'subagentId');
+      const allowedPrefix =
+        subagentId.startsWith(`${parent.ownerAgent}-sub-`) ||
+        subagentId.startsWith(`${rootOwnerAgent}-sub-`);
+      if (!allowedPrefix) {
+        throw Errors.forbidden(
+          `subagentId '${subagentId}' must start with '${parent.ownerAgent}-sub-' or '${rootOwnerAgent}-sub-'`,
+        );
+      }
+    }
+
     const subagentName =
       input.subagentName ||
       `${subagentId} (Sub-Agent of ${parent.ownerAgent})`;
 
     const now = new Date().toISOString();
     let existingSub = await this.store.getTokenByActor(p.wsId, subagentId);
+
+    // Enforce root subrun cap across the root run tree
+    const allRuns = await this.store.listRuns(p.wsId);
+    const runMap = new Map(allRuns.map((r) => [r.id, r]));
+    let rootSubrunCount = 0;
+    for (const r of allRuns) {
+      if (!r.parentRunId) continue;
+      let cur: Run | undefined = r;
+      for (let hop = 0; hop < 4 && cur?.parentRunId; hop++) {
+        if (cur.parentRunId === rootRun.id) {
+          rootSubrunCount += 1;
+          break;
+        }
+        cur = runMap.get(cur.parentRunId);
+      }
+    }
+    if (rootSubrunCount >= MAX_SUBRUNS_PER_ROOT) {
+      throw Errors.badRequest(`Maximum sub-runs per root run (${MAX_SUBRUNS_PER_ROOT}) reached`);
+    }
+
     if (!existingSub) {
+      const wsTokens = await this.store.listTokens(p.wsId);
+      const ownedSubagents = wsTokens.filter(
+        (t) =>
+          !t.revokedAt &&
+          (t.parentAgentId === parent.ownerAgent || t.parentAgentId === rootOwnerAgent),
+      );
+      if (ownedSubagents.length >= MAX_SUBAGENTS_PER_AGENT) {
+        throw Errors.badRequest(
+          `Maximum sub-agents per agent (${MAX_SUBAGENTS_PER_AGENT}) reached`,
+        );
+      }
+
+      const parentToken = await this.store.getTokenByActor(p.wsId, parent.ownerAgent);
+      const parentCaps = parentToken?.capabilities ?? p.capabilities ?? [];
+      const parentCapSet = new Set(parentCaps);
+      const effectiveCaps = input.capabilities
+        ? [...new Set(input.capabilities.filter((cap) => parentCapSet.has(cap)))]
+        : [...parentCaps];
+
       const rawToken = generateToken(subagentId.replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'sub');
       await this.store.saveToken({
         tokenHash: hashToken(rawToken),
@@ -979,17 +1186,26 @@ export class RippleEngine {
         sponsorHuman: parent.sponsorHuman,
         parentAgentId: parent.ownerAgent,
         roles: ['subagent'],
-        capabilities: input.capabilities ?? ['github', 'gdrive', 'gdocs'],
+        capabilities: effectiveCaps,
         lastSeenAt: now,
         statusText: `Working on: ${input.title}`,
         online: true,
+        expiresAt: new Date(Date.now() + DEFAULT_SUBAGENT_TOKEN_TTL_MS).toISOString(),
       });
       existingSub = await this.store.getTokenByActor(p.wsId, subagentId);
     } else {
+      if (
+        existingSub.kind === 'human' ||
+        (existingSub.parentAgentId !== parent.ownerAgent &&
+          existingSub.parentAgentId !== rootOwnerAgent)
+      ) {
+        throw Errors.forbidden(
+          `Cannot spawn sub-run using unowned actor '${subagentId}'`,
+        );
+      }
       existingSub =
         (await this.store.updateTokenByActor(p.wsId, subagentId, {
-          actorName: input.subagentName || existingSub.actorName,
-          parentAgentId: existingSub.parentAgentId ?? parent.ownerAgent,
+          ...(input.subagentName ? { actorName: input.subagentName } : {}),
           lastSeenAt: now,
           statusText: `Working on: ${input.title}`,
           online: true,
@@ -1006,7 +1222,7 @@ export class RippleEngine {
           sponsorHuman: parent.sponsorHuman,
           parentAgentId: parent.ownerAgent,
           roles: ['subagent'],
-          capabilities: input.capabilities ?? ['github', 'gdrive', 'gdocs'],
+          capabilities: [],
           lastSeenAt: now,
           statusText: `Working on: ${input.title}`,
           online: true,
@@ -1105,7 +1321,7 @@ export class RippleEngine {
     p: Principal,
     runId: string,
     input: {
-      epoch?: number;
+      epoch: number;
       summary: string;
       status?: 'done' | 'failed';
       reportData?: Record<string, unknown>;
@@ -1122,9 +1338,11 @@ export class RippleEngine {
   ): Promise<{ run: Run; parentMessage?: ThreadMessage; workspaceMessage?: ThreadMessage; artifacts: Artifact[] }> {
     const run = await this.store.getRun(runId);
     if (!run || run.wsId !== p.wsId) throw Errors.notFound('Run', runId);
-    if (input.epoch !== undefined) {
-      this.assertEpoch(run, input.epoch);
+    await this.assertRunOwnerOrHuman(p, run);
+    if (typeof input.epoch !== 'number' || !Number.isInteger(input.epoch) || input.epoch < 1) {
+      throw Errors.badRequest('epoch is required and must be a positive integer');
     }
+    this.assertEpoch(run, input.epoch);
 
     const now = new Date().toISOString();
     const attachedArtifacts: Artifact[] = [];
@@ -1284,7 +1502,64 @@ export class RippleEngine {
     const body = String(input.body).trim();
     const mentions = extractMentions(body);
 
+    // M2: verify scopeId, runId, itemId, and replyToId belong to p.wsId
+    if (scopeKind === 'run') {
+      const targetRun = await this.store.getRun(scopeId);
+      if (!targetRun || targetRun.wsId !== p.wsId) {
+        throw Errors.notFound('Run', scopeId);
+      }
+    } else if (scopeKind === 'card') {
+      const targetCard = await this.store.getCard(scopeId);
+      if (!targetCard || targetCard.wsId !== p.wsId) {
+        throw Errors.notFound('Card', scopeId);
+      }
+    } else if (scopeKind === 'step') {
+      let stepValid = false;
+      const runPrefix = scopeId.split(/[:#]/)[0];
+      if (runPrefix) {
+        const prefixRun = await this.store.getRun(runPrefix);
+        if (prefixRun && prefixRun.wsId === p.wsId) {
+          stepValid = true;
+        }
+      }
+      if (!stepValid && input.runId) {
+        const refRun = await this.store.getRun(input.runId);
+        if (refRun && refRun.wsId === p.wsId) {
+          stepValid = true;
+        }
+      }
+      if (!stepValid) {
+        const wsRuns = await this.store.listRuns(p.wsId);
+        for (const r of wsRuns) {
+          const steps = await this.store.listSteps(r.id);
+          if (steps.some((s) => s.id === scopeId)) {
+            stepValid = true;
+            break;
+          }
+        }
+      }
+      if (!stepValid) {
+        throw Errors.notFound('Step', scopeId);
+      }
+    }
+
+    if (input.runId) {
+      const refRun = await this.store.getRun(input.runId);
+      if (!refRun || refRun.wsId !== p.wsId) {
+        throw Errors.notFound('Run', input.runId);
+      }
+    }
+    if (input.itemId) {
+      const refItem = await this.store.getItem(input.itemId);
+      if (!refItem || refItem.wsId !== p.wsId) {
+        throw Errors.notFound('Item', input.itemId);
+      }
+    }
+
     const existingMsgs = await this.store.listThreadMessages(p.wsId, scopeKind, scopeId);
+    if (input.replyToId && !existingMsgs.some((m) => m.id === input.replyToId)) {
+      throw Errors.notFound('ThreadMessage', input.replyToId);
+    }
     let hopCount = 0;
     if (p.kind === 'agent') {
       const prev = existingMsgs[existingMsgs.length - 1];
@@ -1528,7 +1803,12 @@ export class RippleEngine {
       if (new Date(c.expiresAt).getTime() > nowMs) continue;
       if (c.onExpire === 'hold') continue;
 
-      if (c.onExpire === 'default_option' && c.defaultOption) {
+      if (
+        c.onExpire === 'default_option' &&
+        c.type !== 'approve' &&
+        c.assignee.kind === 'agent' &&
+        c.defaultOption
+      ) {
         c.status = 'answered';
         c.answerOption = c.defaultOption;
         c.answerNote = 'Auto-answered on expiry';
@@ -1539,7 +1819,7 @@ export class RippleEngine {
         this.notifyCardWaiters(c);
         await this.emit(wsId, 'card', c.id, 'card.expired', 'system', { action: 'default_option', option: c.defaultOption });
         touched.push(c);
-      } else if (c.onExpire === 'escalate') {
+      } else {
         c.assignee = { kind: 'role', id: 'lead' };
         c.expiresAt = undefined;
         await this.store.updateCard(c);

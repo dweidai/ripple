@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
-import { AuthService } from '../src/auth.js';
+import { AuthService, generateToken, hashToken } from '../src/auth.js';
 import { RippleEngine } from '../src/engine.js';
 import { RippleError } from '../src/errors.js';
 import { createRippleHttpServer } from '../src/server.js';
@@ -313,6 +313,7 @@ describe('RippleEngine core invariants', () => {
     });
 
     const sub1 = await engine.spawnSubrun(agy.principal, parentRun.id, {
+      epoch: 1,
       title: 'Create GitHub PR via gh CLI',
       goal: 'Open PR on dweidai/ripple',
       subagentId: 'agy-sub-github',
@@ -326,12 +327,12 @@ describe('RippleEngine core invariants', () => {
     assert.equal(sub1.subagent.parentAgentId, 'agy');
 
     // Test depth limit enforcement (depth 1 -> 2 -> 3 -> 4 throws 400)
-    const sub2 = await engine.spawnSubrun(sub1.subagent, sub1.run.id, { title: 'Depth 2 child' });
+    const sub2 = await engine.spawnSubrun(sub1.subagent, sub1.run.id, { epoch: 1, title: 'Depth 2 child' });
     assert.equal(sub2.run.depth, 2);
-    const sub3 = await engine.spawnSubrun(sub2.subagent, sub2.run.id, { title: 'Depth 3 child' });
+    const sub3 = await engine.spawnSubrun(sub2.subagent, sub2.run.id, { epoch: 1, title: 'Depth 3 child' });
     assert.equal(sub3.run.depth, 3);
     await assert.rejects(
-      () => engine.spawnSubrun(sub3.subagent, sub3.run.id, { title: 'Depth 4 overflow' }),
+      () => engine.spawnSubrun(sub3.subagent, sub3.run.id, { epoch: 1, title: 'Depth 4 overflow' }),
       (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
     );
 
@@ -430,6 +431,7 @@ describe('RippleEngine core invariants', () => {
       actorId: 'you',
       actorName: 'David (@dweidai)',
       kind: 'human',
+      roles: ['lead'],
       rawToken: 'rpl_david_persist',
     });
     await engine1.createItem(human.principal, { title: 'Persisted Task', priority: 'P0' });
@@ -459,12 +461,13 @@ describe('RippleEngine core invariants', () => {
       assert.ok(inviteRes.rawToken.startsWith('rpl_'));
       assert.ok(inviteRes.onboarding.mcpJson.mcpServers.ripple.url.endsWith('/mcp'));
 
-      const guideMd = await fetch(`${base}/w/ws_persist/agent.md?token=${inviteRes.rawToken}`).then((r) =>
-        r.text(),
-      );
+      const guideMd = await fetch(`${base}/w/ws_persist/agent.md`, {
+        headers: { Authorization: `Bearer ${inviteRes.rawToken}` },
+      }).then((r) => r.text());
       assert.match(guideMd, /Ripple Workspace Doorway Guide/);
       assert.match(guideMd, /Muse \(@muse\)/);
       assert.match(guideMd, /ripple_spawn_subrun/);
+      assert.ok(!guideMd.includes(inviteRes.rawToken), 'agent.md must never reflect raw bearer tokens');
     } finally {
       server.close();
       await store2.close();
@@ -512,5 +515,509 @@ describe('RippleEngine core invariants', () => {
     assert.ok(ctx.openCards.some((c) => c.type === 'review'));
   });
 });
+
+describe('M1 Security Hardening invariants', () => {
+  it('C1: enforces server-side allowlists on item.status, actorId, and pin.value', async () => {
+    const { auth, engine, human, agy } = await setup();
+
+    // Invalid actorId in mintToken
+    await assert.rejects(
+      () =>
+        auth.mintToken({
+          wsId: 'ws_1',
+          actorId: 'bad<script>id',
+          actorName: 'Bad',
+          kind: 'agent',
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+
+    // Invalid assigneeId in createItem
+    await assert.rejects(
+      () => engine.createItem(human.principal, { title: 'Test', assigneeId: 'bad actor!' }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+
+    // Invalid item.status in updateItem
+    const item = await engine.createItem(human.principal, { title: 'Allowlist item' });
+    await assert.rejects(
+      () => engine.updateItem(human.principal, item.id, { status: 'hacked' as any }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+
+    // Invalid pin.value in askCard and addArtifact
+    const run = await engine.claim(agy.principal, item.id);
+    await assert.rejects(
+      () =>
+        engine.askCard(agy.principal, run.id, {
+          epoch: 1,
+          type: 'choose',
+          prompt: 'Pick',
+          pin: { kind: 'plan', value: 'v1" onclick="alert(1)' },
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+
+    await assert.rejects(
+      () =>
+        engine.addArtifact(agy.principal, run.id, {
+          epoch: 1,
+          stepIdx: 1,
+          kind: 'commit',
+          ref: 'abc<script>',
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+  });
+
+  it('C2: enforces run ownership (with ancestor walk), human-only controls, and mandatory epoch after 404', async () => {
+    const { engine, human, agy, grok } = await setup();
+    const item = await engine.createItem(human.principal, { title: 'Owned run' });
+    const run = await engine.claim(agy.principal, item.id);
+    await engine.plan(agy.principal, run.id, { epoch: 1, steps: [{ title: 'Step 1' }] });
+    const steer = await engine.queueSteer(human.principal, run.id, { op: 'freeform', payload: { text: 'hi' } });
+
+    // Cross-agent mutations on agy's run -> 403
+    const crossAgentCalls = [
+      () => engine.plan(grok.principal, run.id, { epoch: 1, steps: [{ title: 'Hijack' }] }),
+      () => engine.updateStep(grok.principal, run.id, { epoch: 1, idx: 1, status: 'done' }),
+      () => engine.addArtifact(grok.principal, run.id, { epoch: 1, stepIdx: 1, kind: 'commit', ref: 'a1b2c3d' }),
+      () => engine.checkpoint(grok.principal, run.id, { epoch: 1, afterStep: 1 }),
+      () => engine.heartbeat(grok.principal, run.id, 1),
+      () => engine.ackSteer(grok.principal, steer.id, { accepted: true }),
+      () => engine.askCard(grok.principal, run.id, { epoch: 1, type: 'choose', prompt: 'Hijack?' }),
+      () => engine.spawnSubrun(grok.principal, run.id, { epoch: 1, title: 'Hijack sub' }),
+      () => engine.reportRun(grok.principal, run.id, { epoch: 1, summary: 'Hijack report' }),
+    ];
+    for (const fn of crossAgentCalls) {
+      await assert.rejects(
+        fn,
+        (err: unknown) => err instanceof RippleError && err.code === 'forbidden' && err.status === 403,
+      );
+    }
+
+    // Human-only controls rejected for agents -> 403
+    const humanOnlyCalls = [
+      () => engine.queueSteer(agy.principal, run.id, { op: 'freeform', payload: { text: 'nope' } }),
+      () => engine.takeoverRun(agy.principal, run.id),
+      () => engine.cancelRun(agy.principal, run.id),
+      () => engine.resumeRun(agy.principal, run.id),
+      () =>
+        engine.createFlow(agy.principal, {
+          name: 'Rogue flow',
+          triggerKind: 'manual',
+          agentId: 'agy',
+          steps: [{ title: 's1' }],
+        }),
+    ];
+    for (const fn of humanOnlyCalls) {
+      await assert.rejects(
+        fn,
+        (err: unknown) => err instanceof RippleError && err.code === 'forbidden' && err.status === 403,
+      );
+    }
+
+    const flow = await engine.createFlow(human.principal, {
+      name: 'Human flow',
+      triggerKind: 'manual',
+      agentId: 'agy',
+      steps: [{ title: 's1' }],
+    });
+    await assert.rejects(
+      () => engine.triggerFlow(agy.principal, flow.id),
+      (err: unknown) => err instanceof RippleError && err.code === 'forbidden' && err.status === 403,
+    );
+
+    // Ancestor owner (agy) can operate on its own spawned sub-run
+    const sub = await engine.spawnSubrun(agy.principal, run.id, {
+      epoch: 1,
+      title: 'Child task',
+      subagentId: 'agy-sub-1',
+    });
+    const rep = await engine.reportRun(agy.principal, sub.run.id, { epoch: 1, summary: 'Parent reported' });
+    assert.equal(rep.run.status, 'done');
+
+    // Missing run returns 404 BEFORE epoch validation
+    await assert.rejects(
+      () => engine.spawnSubrun(agy.principal, 'r_nonexistent', { epoch: undefined as any, title: 'Missing' }),
+      (err: unknown) => err instanceof RippleError && err.code === 'not_found' && err.status === 404,
+    );
+    await assert.rejects(
+      () => engine.reportRun(agy.principal, 'r_nonexistent', { epoch: undefined as any, summary: 'Missing' }),
+      (err: unknown) => err instanceof RippleError && err.code === 'not_found' && err.status === 404,
+    );
+
+    // Stale epoch on spawnSubrun / reportRun -> 409 fenced
+    await assert.rejects(
+      () => engine.spawnSubrun(agy.principal, run.id, { epoch: 99, title: 'Stale' }),
+      (err: unknown) => err instanceof RippleError && err.code === 'fenced' && err.status === 409,
+    );
+    await assert.rejects(
+      () => engine.reportRun(agy.principal, run.id, { epoch: 99, summary: 'Stale' }),
+      (err: unknown) => err instanceof RippleError && err.code === 'fenced' && err.status === 409,
+    );
+  });
+
+  it('C4: isolates idempotency keys by (wsId, actorId, method, path, key) with TTL expiry', async () => {
+    const store = new MemoryStore();
+    await store.init();
+    const baseScope = { wsId: 'ws_1', actorId: 'maya', method: 'POST', path: '/api/v1/items', key: 'k1' };
+    await store.saveIdempotency(baseScope, { id: 'item_a' });
+
+    assert.deepEqual(await store.getIdempotency(baseScope), { id: 'item_a' });
+    assert.equal(await store.getIdempotency({ ...baseScope, wsId: 'ws_2' }), undefined);
+    assert.equal(await store.getIdempotency({ ...baseScope, actorId: 'agy' }), undefined);
+    assert.equal(await store.getIdempotency({ ...baseScope, method: 'PATCH' }), undefined);
+    assert.equal(await store.getIdempotency({ ...baseScope, path: '/api/v1/other' }), undefined);
+
+    // TTL expiry
+    const shortScope = { ...baseScope, key: 'k_exp' };
+    await store.saveIdempotency(shortScope, { id: 'item_b' }, -10);
+    assert.equal(await store.getIdempotency(shortScope), undefined);
+  });
+
+  it('C5: rejects non-http/https URLs while preserving non-URL commit SHAs', async () => {
+    const { engine, human, agy } = await setup();
+    const item = await engine.createItem(human.principal, { title: 'URL test' });
+    const run = await engine.claim(agy.principal, item.id);
+
+    await assert.rejects(
+      () => engine.updateItem(human.principal, item.id, { resultUrl: 'javascript:alert(1)' }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+    await assert.rejects(
+      () =>
+        engine.addArtifact(agy.principal, run.id, {
+          epoch: 1,
+          stepIdx: 1,
+          kind: 'url',
+          ref: 'javascript:alert(1)',
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+    await assert.rejects(
+      () =>
+        engine.addArtifact(agy.principal, run.id, {
+          epoch: 1,
+          stepIdx: 1,
+          kind: 'file',
+          ref: 'data:text/html,<script>alert(1)</script>',
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+    await assert.rejects(
+      () =>
+        engine.addArtifact(agy.principal, run.id, {
+          epoch: 1,
+          stepIdx: 1,
+          kind: 'pr',
+          ref: 'a1b2c3d',
+          url: 'vbscript:msgbox(1)',
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+
+    // Commit SHA without URI scheme still succeeds
+    const okArt = await engine.addArtifact(agy.principal, run.id, {
+      epoch: 1,
+      stepIdx: 1,
+      kind: 'commit',
+      ref: 'a1b2c3d',
+    });
+    assert.equal(okArt.artifact.ref, 'a1b2c3d');
+  });
+
+  it('H4: enforces Decision Card gate integrity (no self-answer, strict assignee/role, safe onExpire)', async () => {
+    const { auth, engine, human, agy, grok } = await setup();
+    const rolelessHuman = await auth.mintToken({
+      wsId: 'ws_1',
+      actorId: 'bob',
+      actorName: 'Bob',
+      kind: 'human',
+      roles: [],
+    });
+
+    const item = await engine.createItem(human.principal, { title: 'Gate test' });
+    const run = await engine.claim(agy.principal, item.id);
+
+    // Forbid onExpire: 'default_option' on approve or non-agent cards
+    await assert.rejects(
+      () =>
+        engine.askCard(agy.principal, run.id, {
+          epoch: 1,
+          type: 'approve',
+          prompt: 'Auto-approve?',
+          assignee: { kind: 'user', id: 'maya' },
+          onExpire: 'default_option',
+          defaultOption: 'approve',
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'forbidden' && err.status === 403,
+    );
+
+    // Reject past expiresAt
+    await assert.rejects(
+      () =>
+        engine.askCard(agy.principal, run.id, {
+          epoch: 1,
+          type: 'choose',
+          prompt: 'Past expiry',
+          options: ['a', 'b'],
+          expiresAt: new Date(Date.now() - 5000).toISOString(),
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+
+    // Role card: roleless human cannot bypass role check
+    const roleCard = await engine.askCard(agy.principal, run.id, {
+      epoch: 1,
+      type: 'approve',
+      prompt: 'Need reviewer',
+      assignee: { kind: 'role', id: 'reviewer' },
+    });
+    await assert.rejects(
+      () => engine.answerCard(rolelessHuman.principal, roleCard.id, { option: 'approve', onPin: roleCard.pin.value }),
+      (err: unknown) => err instanceof RippleError && err.code === 'forbidden' && err.status === 403,
+    );
+
+    // User card: wrong human rejected
+    const userCard = await engine.askCard(agy.principal, run.id, {
+      epoch: 1,
+      type: 'approve',
+      prompt: 'Need Maya',
+      assignee: { kind: 'user', id: 'maya' },
+      blocking: false,
+    });
+    await assert.rejects(
+      () => engine.answerCard(rolelessHuman.principal, userCard.id, { option: 'approve', onPin: userCard.pin.value }),
+      (err: unknown) => err instanceof RippleError && err.code === 'forbidden' && err.status === 403,
+    );
+
+    // Agent card: asker cannot self-answer; wrong agent rejected; right agent succeeds
+    const agentCard = await engine.askCard(agy.principal, run.id, {
+      epoch: 1,
+      type: 'choose',
+      prompt: 'Grok pick',
+      options: ['x', 'y'],
+      assignee: { kind: 'agent', id: 'grok' },
+      blocking: false,
+    });
+    await assert.rejects(
+      () => engine.answerCard(agy.principal, agentCard.id, { option: 'x', onPin: agentCard.pin.value }),
+      (err: unknown) => err instanceof RippleError && err.code === 'forbidden' && err.status === 403,
+    );
+    const answered = await engine.answerCard(grok.principal, agentCard.id, {
+      option: 'x',
+      onPin: agentCard.pin.value,
+    });
+    assert.equal(answered.status, 'answered');
+
+    // Sweeper defense-in-depth: persisted approve card with default_option escalates instead of auto-approving
+    await engine.store.createCard({
+      id: 'c_forged_expire',
+      wsId: 'ws_1',
+      runId: run.id,
+      asker: 'agy',
+      type: 'approve',
+      prompt: 'Forged auto-approve',
+      options: ['approve', 'reject'],
+      diffPreview: '',
+      pin: { kind: 'plan', value: 'v0' },
+      assignee: { kind: 'user', id: 'maya' },
+      blocking: true,
+      status: 'open',
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+      onExpire: 'default_option',
+      defaultOption: 'approve',
+      createdAt: new Date().toISOString(),
+    });
+    await engine.sweepExpiredCards('ws_1');
+    const swept = await engine.store.getCard('c_forged_expire');
+    assert.equal(swept?.status, 'open');
+    assert.deepEqual(swept?.assignee, { kind: 'role', id: 'lead' });
+  });
+
+  it('H5: hardens sub-agent spawning (prefix isolation, no human/unowned overwrite, capability intersection, caps)', async () => {
+    const { auth, engine, human } = await setup();
+    const limitedAgy = await auth.mintToken({
+      wsId: 'ws_1',
+      actorId: 'limited',
+      actorName: 'Limited Agent',
+      kind: 'agent',
+      sponsorHuman: 'maya',
+      capabilities: ['github'],
+    });
+    const item = await engine.createItem(human.principal, { title: 'Sub-agent security' });
+    const run = await engine.claim(limitedAgy.principal, item.id);
+
+    // Disallowed prefix (attempting to target human 'maya' or unrelated agent 'grok')
+    await assert.rejects(
+      () => engine.spawnSubrun(limitedAgy.principal, run.id, { epoch: 1, title: 'Hijack', subagentId: 'maya' }),
+      (err: unknown) => err instanceof RippleError && err.code === 'forbidden' && err.status === 403,
+    );
+    await assert.rejects(
+      () => engine.spawnSubrun(limitedAgy.principal, run.id, { epoch: 1, title: 'Hijack', subagentId: 'grok' }),
+      (err: unknown) => err instanceof RippleError && err.code === 'forbidden' && err.status === 403,
+    );
+
+    // Capability intersection: cannot escalate beyond parent's ['github']
+    const sub = await engine.spawnSubrun(limitedAgy.principal, run.id, {
+      epoch: 1,
+      title: 'Scoped sub',
+      subagentId: 'limited-sub-1',
+      capabilities: ['github', 'gdrive', 'admin'],
+    });
+    assert.deepEqual(sub.subagent.capabilities, ['github']);
+
+    // Sub-agent cap (MAX_SUBAGENTS_PER_AGENT = 10)
+    for (let i = 2; i <= 10; i++) {
+      await engine.spawnSubrun(limitedAgy.principal, run.id, {
+        epoch: 1,
+        title: `Sub ${i}`,
+        subagentId: `limited-sub-${i}`,
+      });
+    }
+    await assert.rejects(
+      () =>
+        engine.spawnSubrun(limitedAgy.principal, run.id, {
+          epoch: 1,
+          title: 'Sub 11 overflow',
+          subagentId: 'limited-sub-11',
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+    );
+  });
+
+  it('H6 & L2: enforces token expiry, no rawToken persistence, revocation hook, and 256-bit/128-bit entropy', async () => {
+    const { store, auth, engine, human } = await setup();
+
+    // Expired token rejected with 401
+    const expired = await auth.mintToken({
+      wsId: 'ws_1',
+      actorId: 'temp_agent',
+      actorName: 'Temp',
+      kind: 'agent',
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    await assert.rejects(
+      () => auth.authenticate(`Bearer ${expired.rawToken}`),
+      (err: unknown) => err instanceof RippleError && err.code === 'unauthorized' && err.status === 401,
+    );
+
+    // No rawToken persisted on TokenRecord
+    const storedRec = await store.getTokenByHash(hashToken(expired.rawToken));
+    assert.ok(storedRec);
+    assert.equal('rawToken' in storedRec, false);
+
+    // authenticateByHash & onActorRevoked hook
+    const revokedEvents: Array<{ wsId: string; actorId: string }> = [];
+    const unsub = auth.onActorRevoked((wsId, actorId) => revokedEvents.push({ wsId, actorId }));
+    const fresh = await auth.mintToken({
+      wsId: 'ws_1',
+      actorId: 'fresh_agent',
+      actorName: 'Fresh',
+      kind: 'agent',
+    });
+    const authed = await auth.authenticateByHash(hashToken(fresh.rawToken));
+    assert.equal(authed.actorId, 'fresh_agent');
+
+    await auth.revokeActor('ws_1', 'fresh_agent');
+    assert.deepEqual(revokedEvents, [{ wsId: 'ws_1', actorId: 'fresh_agent' }]);
+    await assert.rejects(
+      () => auth.authenticateByHash(hashToken(fresh.rawToken)),
+      (err: unknown) => err instanceof RippleError && err.code === 'unauthorized' && err.status === 401,
+    );
+    unsub();
+
+    // 256-bit token entropy (43 base64url chars) & 128-bit uid entropy (32 hex chars)
+    const tok = generateToken('ent');
+    assert.match(tok, /^rpl_ent_[A-Za-z0-9_-]{43}$/);
+    const item = await engine.createItem(human.principal, { title: 'Entropy check' });
+    assert.match(item.id, /^item_[0-9a-f]{32}$/);
+  });
+
+  it('M2 & M5: enforces server-derived createdBy, cross-workspace entity ownership, and 0o600/0o700 state.json permissions', async () => {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const { store, auth, engine, human, agy } = await setup();
+
+    // Server-derived createdBy ignores spoofed caller input
+    const item = await engine.createItem(agy.principal, {
+      title: 'Spoof attempt',
+      createdBy: 'maya',
+    });
+    assert.equal(item.createdBy, 'agy');
+
+    // Cross-workspace isolation on parentItemId, linkedRunId, spawnSubrun.itemId, postThreadMessage
+    await store.ensureWorkspace('ws_other', 'Other');
+    const otherHuman = await auth.mintToken({
+      wsId: 'ws_other',
+      actorId: 'other_human',
+      actorName: 'Other',
+      kind: 'human',
+    });
+    const otherItem = await engine.createItem(otherHuman.principal, { title: 'Foreign item' });
+    const otherRun = await engine.claim(otherHuman.principal, otherItem.id);
+
+    await assert.rejects(
+      () => engine.createItem(human.principal, { title: 'Child', parentItemId: otherItem.id }),
+      (err: unknown) => err instanceof RippleError && err.code === 'not_found' && err.status === 404,
+    );
+    await assert.rejects(
+      () => engine.updateItem(human.principal, item.id, { linkedRunId: otherRun.id }),
+      (err: unknown) => err instanceof RippleError && err.code === 'not_found' && err.status === 404,
+    );
+    const localRun = await engine.claim(agy.principal, item.id);
+    await assert.rejects(
+      () =>
+        engine.spawnSubrun(agy.principal, localRun.id, {
+          epoch: 1,
+          title: 'Foreign item sub',
+          itemId: otherItem.id,
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'not_found' && err.status === 404,
+    );
+    await assert.rejects(
+      () =>
+        engine.postThreadMessage(human.principal, {
+          scopeKind: 'run',
+          scopeId: otherRun.id,
+          body: 'Cross-tenant run thread',
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'not_found' && err.status === 404,
+    );
+    await assert.rejects(
+      () =>
+        engine.postThreadMessage(human.principal, {
+          scopeKind: 'workspace',
+          scopeId: 'main',
+          body: 'Bad replyToId',
+          replyToId: 'msg_nonexistent',
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'not_found' && err.status === 404,
+    );
+
+    // M5: MemoryStore file permissions (0o700 dir, 0o600 file)
+    const tmpDir = path.resolve(
+      '/home/antigravity/.gemini/jetski/scratch/teamwork_tmp/5bb8d2190f6ed01aaa8131cb419b05f7',
+      `perm-test-${Date.now()}`,
+    );
+    const stateFile = path.join(tmpDir, 'state.json');
+    try {
+      const fileStore = new MemoryStore(stateFile);
+      await fileStore.init();
+      await fileStore.ensureWorkspace('ws_perm', 'Perm');
+      await fileStore.close();
+
+      const dirStat = await fs.stat(tmpDir);
+      const fileStat = await fs.stat(stateFile);
+      assert.equal(dirStat.mode & 0o777, 0o700);
+      assert.equal(fileStat.mode & 0o777, 0o600);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+});
+
 
 

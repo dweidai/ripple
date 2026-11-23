@@ -319,7 +319,7 @@ describe('Tier 1 — Feature Coverage (All 17 Features in PROJECT.md § Feature 
       assert.equal(health.status, 200);
       assert.equal(health.data.ok, true);
 
-      // 2. Dynamic publicUrl detection from X-Forwarded-Proto and X-Forwarded-Host / Host
+      // 2. Configured publicUrl takes precedence over untrusted X-Forwarded-Proto/Host headers (H7)
       const boot = await ws.api('GET', '/bootstrap', {
         token: ws.tokens.human,
         headers: {
@@ -329,16 +329,20 @@ describe('Tier 1 — Feature Coverage (All 17 Features in PROJECT.md § Feature 
         },
       });
       assert.equal(boot.status, 200);
-      assert.match(boot.data.mcp_endpoint, /^https:\/\/ripple-live-tunnel\.trycloudflare\.com\/mcp$/);
-      assert.match(boot.data.rest_base, /^https:\/\/ripple-live-tunnel\.trycloudflare\.com\/api\/v1$/);
+      assert.match(boot.data.mcp_endpoint, /^https:\/\/ripple-configured\.trycloudflare\.com\/mcp$/);
+      assert.match(boot.data.rest_base, /^https:\/\/ripple-configured\.trycloudflare\.com\/api\/v1$/);
       assert.equal(boot.data.whoami?.actorId, 'you');
 
-      // 3. ?token= query parameter authentication for phone auto-login
+      // 3. ?token= query parameter authentication is rejected on /api/v1/* (H2); Bearer header succeeds
       const whoamiQuery = await ws.api('GET', `/api/v1/whoami?token=${encodeURIComponent(ws.tokens.human)}`, {
         token: null,
       });
-      assert.equal(whoamiQuery.status, 200);
-      assert.equal(whoamiQuery.data.actorId, 'you');
+      assert.equal(whoamiQuery.status, 401);
+      const whoamiHeader = await ws.api('GET', '/api/v1/whoami', {
+        token: ws.tokens.human,
+      });
+      assert.equal(whoamiHeader.status, 200);
+      assert.equal(whoamiHeader.data.actorId, 'you');
 
       // 4. Create item & verify persistence across restart if stateFile is supported by MemoryStore
       const created = await ws.api('POST', '/api/v1/items', {
@@ -592,6 +596,7 @@ describe('Tier 1 — Feature Coverage (All 17 Features in PROJECT.md § Feature 
       const spawned = await ws.api('POST', `/api/v1/runs/${parentRun.data.id}/subruns`, {
         token: ws.tokens.agy,
         body: {
+          epoch: 1,
           title: 'Create GitHub PR for sub-agent bridge',
           goal: 'Open branch and PR on dweidai/ripple',
           subagentId: 'agy-sub-pr',
@@ -645,6 +650,7 @@ describe('Tier 1 — Feature Coverage (All 17 Features in PROJECT.md § Feature 
       const sub = await ws.api('POST', `/api/v1/runs/${parentRun.data.id}/subruns`, {
         token: ws.tokens.agy,
         body: {
+          epoch: 1,
           title: 'GitHub PR Worker',
           subagentId: 'agy-sub-pr',
           steps: [{ title: 'Inspect & attach PR' }],
@@ -710,6 +716,7 @@ describe('Tier 1 — Feature Coverage (All 17 Features in PROJECT.md § Feature 
       const sub = await ws.api('POST', `/api/v1/runs/${parentRun.data.id}/subruns`, {
         token: ws.tokens.muse,
         body: {
+          epoch: 1,
           title: 'Muse Drive & Docs Sub-Agent',
           subagentId: 'muse-sub-drive',
           steps: [{ title: 'Search Drive & attach Google Doc' }],
@@ -1114,7 +1121,9 @@ describe('Tier 1 — Feature Coverage (All 17 Features in PROJECT.md § Feature 
       assert.match(html, /Dialogue|Chat/i);
       assert.match(html, /Backlog/i);
       assert.match(html, /Decisions/i);
-      assert.match(html, /@media[^{]*768px/i, 'Must include mobile responsive media query (<= 768px)');
+      const cssRes = await ws.api('GET', '/styles.css', { token: null });
+      assert.equal(cssRes.status, 200);
+      assert.match(cssRes.text, /@media[^{]*768px/i, 'Must include mobile responsive media query (<= 768px) in /styles.css');
       assert.ok(!/\bprompt\s*\(/.test(html), 'Web UI must not use native browser prompt() dialogs');
       assert.ok(!/\bconfirm\s*\(/.test(html), 'Web UI must not use native browser confirm() dialogs');
 
@@ -1444,7 +1453,7 @@ describe('Tier 2 — Boundary & Corner Cases (400, 401, 403, 404, 409, HopCount,
       // Depth 1
       const r1 = await ws.api('POST', `/api/v1/runs/${r0.data.id}/subruns`, {
         token: ws.tokens.agy,
-        body: { title: 'Depth 1 subrun', subagentId: 'agy-sub-1' },
+        body: { epoch: 1, title: 'Depth 1 subrun', subagentId: 'agy-sub-1' },
       });
       assert.ok(r1.status === 200 || r1.status === 201);
       const run1 = r1.data.run ?? r1.data.subRun;
@@ -1453,7 +1462,7 @@ describe('Tier 2 — Boundary & Corner Cases (400, 401, 403, 404, 409, HopCount,
       // Depth 2
       const r2 = await ws.api('POST', `/api/v1/runs/${run1.id}/subruns`, {
         token: ws.tokens.agy,
-        body: { title: 'Depth 2 subrun', subagentId: 'agy-sub-2' },
+        body: { epoch: 1, title: 'Depth 2 subrun', subagentId: 'agy-sub-1-sub-2' },
       });
       assert.ok(r2.status === 200 || r2.status === 201);
       const run2 = r2.data.run ?? r2.data.subRun;
@@ -1462,7 +1471,7 @@ describe('Tier 2 — Boundary & Corner Cases (400, 401, 403, 404, 409, HopCount,
       // Depth 3 (max allowed)
       const r3 = await ws.api('POST', `/api/v1/runs/${run2.id}/subruns`, {
         token: ws.tokens.agy,
-        body: { title: 'Depth 3 subrun', subagentId: 'agy-sub-3' },
+        body: { epoch: 1, title: 'Depth 3 subrun', subagentId: 'agy-sub-1-sub-2-sub-3' },
       });
       assert.ok(r3.status === 200 || r3.status === 201);
       const run3 = r3.data.run ?? r3.data.subRun;
@@ -1471,7 +1480,7 @@ describe('Tier 2 — Boundary & Corner Cases (400, 401, 403, 404, 409, HopCount,
       // Depth 4 -> must be rejected with 400 bad_request
       const r4 = await ws.api('POST', `/api/v1/runs/${run3.id}/subruns`, {
         token: ws.tokens.agy,
-        body: { title: 'Depth 4 excessive subrun', subagentId: 'agy-sub-4' },
+        body: { epoch: 1, title: 'Depth 4 excessive subrun', subagentId: 'agy-sub-1-sub-2-sub-3-sub-4' },
       });
       assert.equal(r4.status, 400);
       assert.equal(r4.data.error, 'bad_request');
@@ -1580,6 +1589,7 @@ describe('Tier 3 — Cross-Feature Combinations', () => {
       // Spawn child run linked to childItem via MCP ripple_spawn_subrun
       const mcpSpawn = await ws.mcpCall(ws.tokens.muse, 'ripple_spawn_subrun', {
         parent_run_id: parentRun.data.id,
+        epoch: 1,
         title: 'Write Drive Spec Doc',
         goal: 'Create Google Doc and attach link',
         subagent_id: 'muse-sub-drive',
@@ -1641,9 +1651,10 @@ describe('Tier 3 — Cross-Feature Combinations', () => {
         body: { body: 'SSE Dialogue Broadcast @agy' },
       });
 
-      // Connect to SSE stream with after=0 and read buffered events
+      // Connect to SSE stream with after=0 using Authorization header (no ?token= in URL)
       const controller = new AbortController();
-      const sseRes = await fetch(`${ws.baseUrl}/api/v1/events?after=0&token=${ws.tokens.human}`, {
+      const sseRes = await fetch(`${ws.baseUrl}/api/v1/events?after=0`, {
+        headers: { Authorization: `Bearer ${ws.tokens.human}` },
         signal: controller.signal,
       });
       assert.equal(sseRes.status, 200);
@@ -1718,9 +1729,9 @@ describe('Tier 4 — Real-World Application Scenarios', () => {
     });
 
     try {
-      // Step 1: User opens workspace on phone via ?token= auto-login and updates profile ("I want to see myself")
-      const mePatch = await ws.api('PATCH', `/api/v1/me?token=${encodeURIComponent(ws.tokens.human)}`, {
-        token: null,
+      // Step 1: User authenticates with Bearer header and updates profile ("I want to see myself")
+      const mePatch = await ws.api('PATCH', '/api/v1/me', {
+        token: ws.tokens.human,
         body: {
           actorName: 'David (@dweidai)',
           statusText: 'On my phone reviewing overnight builds',
@@ -1765,8 +1776,8 @@ describe('Tier 4 — Real-World Application Scenarios', () => {
       const museToken = museInvite.data.rawToken;
 
       // Step 3: Both agents read the self-describing doorway guide and shared context
-      const doorway = await ws.api('GET', `/w/${ws.wsId}/agent.md?token=${encodeURIComponent(agyToken)}`, {
-        token: null,
+      const doorway = await ws.api('GET', `/w/${ws.wsId}/agent.md`, {
+        token: agyToken,
       });
       assert.equal(doorway.status, 200);
 
@@ -1841,6 +1852,7 @@ describe('Tier 4 — Real-World Application Scenarios', () => {
 
       const museSub = await ws.mcpCall(museToken, 'ripple_spawn_subrun', {
         parent_run_id: museRunId,
+        epoch: 1,
         title: 'Muse Google Docs & Drive Publisher',
         goal: 'Create release notes doc in Google Drive and return URL',
         subagent_id: 'muse-sub-drive',
@@ -1889,6 +1901,7 @@ describe('Tier 4 — Real-World Application Scenarios', () => {
 
       const agySub = await ws.mcpCall(agyToken, 'ripple_spawn_subrun', {
         parent_run_id: agyRunId,
+        epoch: 1,
         title: 'Antigravity GitHub PR Creator',
         goal: 'Push branch and create PR on https://github.com/dweidai/ripple',
         subagent_id: 'agy-sub-pr',

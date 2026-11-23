@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type {
   Artifact,
   Card,
@@ -14,8 +15,25 @@ import type {
 
 export interface TokenRecord extends Principal {
   tokenHash: string;
-  rawToken?: string;
+  expiresAt?: string;
   revokedAt?: string;
+}
+
+export interface IdempotencyScope {
+  wsId: string;
+  actorId: string;
+  method: string;
+  path: string;
+  key: string;
+}
+
+export const DEFAULT_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+
+export function hashIdempotencyScope(scope: IdempotencyScope): string {
+  return crypto
+    .createHash('sha256')
+    .update([scope.wsId, scope.actorId, scope.method.toUpperCase(), scope.path, scope.key].join('\0'))
+    .digest('hex');
 }
 
 export type EventListener = (event: RippleEvent) => void;
@@ -85,6 +103,6 @@ export interface Store {
   subscribe(wsId: string, listener: EventListener): () => void;
 
   // Idempotency
-  getIdempotency(key: string): Promise<unknown | undefined>;
-  saveIdempotency(key: string, wsId: string, response: unknown): Promise<void>;
+  getIdempotency(scope: IdempotencyScope): Promise<unknown | undefined>;
+  saveIdempotency(scope: IdempotencyScope, response: unknown, ttlMs?: number): Promise<void>;
 }

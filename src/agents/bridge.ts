@@ -1,6 +1,7 @@
 import { AuthService, recordToPrincipal } from '../auth.js';
 import { RippleEngine } from '../engine.js';
-import { TERMINAL_RUN_STATUSES, type Principal, type RippleEvent, type Run } from '../types.js';
+import { Errors } from '../errors.js';
+import type { Principal, RippleEvent, Run } from '../types.js';
 import {
   createGitHubPullRequest,
   createGoogleDoc,
@@ -11,18 +12,65 @@ import {
   type GoogleDocResult,
 } from './tools.js';
 
+const MAX_PROCESSED_MESSAGES = 2000;
+const DEFAULT_MAX_ACTIVE_SUBRUNS = 3;
+const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000;
+
+export function sanitizeExternalText(input: string, maxLen = 80): string {
+  return String(input ?? '')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/@/g, '')
+    .replace(/[*_`[\]()#<>~|]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLen);
+}
+
+class BoundedIdSet {
+  private map = new Map<string, true>();
+  constructor(private readonly maxSize: number) {}
+
+  has(id: string): boolean {
+    if (!this.map.has(id)) return false;
+    // Refresh recency for LRU behavior
+    this.map.delete(id);
+    this.map.set(id, true);
+    return true;
+  }
+
+  add(id: string): void {
+    if (this.map.has(id)) {
+      this.map.delete(id);
+    } else if (this.map.size >= this.maxSize) {
+      const oldest = this.map.keys().next().value;
+      if (oldest !== undefined) this.map.delete(oldest);
+    }
+    this.map.set(id, true);
+  }
+
+  get size(): number {
+    return this.map.size;
+  }
+}
+
 export interface BridgeOptions {
   wsId?: string;
   enabled?: boolean;
   executeRealTools?: boolean;
+  maxActiveSubruns?: number;
+  approvalTimeoutMs?: number;
 }
 
 export class MultiAgentBridge {
   private wsId: string;
   private enabled: boolean;
   private executeRealTools: boolean;
+  private maxActiveSubruns: number;
+  private approvalTimeoutMs: number;
   private unsub?: () => void;
-  private processingMessages = new Set<string>();
+  private processingMessages = new BoundedIdSet(MAX_PROCESSED_MESSAGES);
+  private bridgeEmittedMsgIds = new BoundedIdSet(MAX_PROCESSED_MESSAGES);
   private activeSubruns = new Set<string>();
 
   constructor(
@@ -33,6 +81,8 @@ export class MultiAgentBridge {
     this.wsId = opts.wsId ?? 'ws_default';
     this.enabled = opts.enabled ?? true;
     this.executeRealTools = opts.executeRealTools ?? true;
+    this.maxActiveSubruns = opts.maxActiveSubruns ?? DEFAULT_MAX_ACTIVE_SUBRUNS;
+    this.approvalTimeoutMs = opts.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
   }
 
   start(): void {
@@ -52,6 +102,19 @@ export class MultiAgentBridge {
     }
   }
 
+  private async postBridgeMessage(
+    principal: Principal,
+    input: {
+      scopeKind: 'workspace' | 'run' | 'step' | 'card';
+      scopeId: string;
+      body: string;
+    },
+  ) {
+    const res = await this.engine.postThreadMessage(principal, input);
+    this.bridgeEmittedMsgIds.add(res.message.id);
+    return res;
+  }
+
   private async getPrincipal(actorId: string): Promise<Principal | undefined> {
     const rec = await this.engine.store.getTokenByActor(this.wsId, actorId);
     if (!rec) return undefined;
@@ -61,7 +124,10 @@ export class MultiAgentBridge {
   private async onEvent(ev: RippleEvent): Promise<void> {
     if (ev.type === 'thread.message') {
       const msgId = String(ev.payload.messageId ?? '');
-      if (!msgId || this.processingMessages.has(msgId)) return;
+      if (!msgId) return;
+      // Yield one microtask so synchronous postBridgeMessage can register msg.id
+      await Promise.resolve();
+      if (this.bridgeEmittedMsgIds.has(msgId) || this.processingMessages.has(msgId)) return;
       this.processingMessages.add(msgId);
       await this.handleThreadMessage(ev);
     }
@@ -157,7 +223,7 @@ export class MultiAgentBridge {
       return;
     }
 
-    // Agent-to-agent turn handoff (hopCount < 3)
+    // Agent-to-agent turn handoff (hopCount < 2): dialogue only, NEVER auto-trigger external sub-agents
     if (authorKind === 'agent' && hopCount < 2) {
       if (actorId === 'muse' && mentionsAgy) {
         await this.runAgyTurn({
@@ -165,7 +231,7 @@ export class MultiAgentBridge {
           scopeId,
           userPrompt: body,
           handOffToMuse: false,
-          spawnPrSubagent: wantsSubagentOrWorkflow,
+          spawnPrSubagent: false,
           syncBacklog: false,
         });
       } else if (actorId === 'agy' && mentionsMuse) {
@@ -174,7 +240,7 @@ export class MultiAgentBridge {
           scopeId,
           userPrompt: body,
           handOffToAgy: false,
-          spawnDriveSubagent: wantsSubagentOrWorkflow,
+          spawnDriveSubagent: false,
           syncBacklog: false,
         });
       }
@@ -229,7 +295,7 @@ export class MultiAgentBridge {
     }
 
     if (muse && agy && (gdocResult || prResult)) {
-      await this.engine.postThreadMessage(muse, {
+      await this.postBridgeMessage(muse, {
         scopeKind: opts.scopeKind,
         scopeId: opts.scopeId,
         body:
@@ -290,14 +356,14 @@ export class MultiAgentBridge {
     const recentFiles = this.executeRealTools ? await listRecentDriveFiles(3) : [];
     const driveContextStr =
       recentFiles.length > 0
-        ? `Recent Google Drive files visible: ${recentFiles.map((f) => `"${f.name}"`).join(', ')}.`
+        ? `Recent Google Drive files visible: ${recentFiles.map((f) => `"${sanitizeExternalText(f.name)}"`).join(', ')}.`
         : `Workspace has ${openCount} open backlog item(s) and ${activeCount} active run(s).`;
 
     const handoffLine = opts.handOffToAgy
       ? ` @agy I've aligned the backlog tasks—let's spin up our sub-agents (\`muse-sub-drive\` for Google Docs/Drive and \`agy-sub-github\` for the GitHub PR) and link the artifacts back.`
       : '';
 
-    await this.engine.postThreadMessage(muse, {
+    await this.postBridgeMessage(muse, {
       scopeKind: opts.scopeKind,
       scopeId: opts.scopeId,
       body:
@@ -336,7 +402,7 @@ export class MultiAgentBridge {
       });
     }
 
-    const sub = await this. executeDriveSubagent(muse, parentRun, {
+    const sub = await this.executeDriveSubagent(muse, parentRun, {
       title: 'Create Ripple Multi-Agent Spec in Google Docs & Index Drive',
       userPrompt: opts.userPrompt,
     });
@@ -388,10 +454,10 @@ export class MultiAgentBridge {
       ? await inspectGitHubRepo().catch(() => null)
       : null;
     const repoInfoStr = repoSummary
-      ? `Repo \`${repoSummary.repo}\` is at \`${repoSummary.headSha.slice(0, 7)}\` on \`${repoSummary.defaultBranch}\` (${repoSummary.openPrs.length} open PRs).`
+      ? `Repo \`${sanitizeExternalText(repoSummary.repo)}\` is at \`${sanitizeExternalText(repoSummary.headSha.slice(0, 7), 16)}\` on \`${sanitizeExternalText(repoSummary.defaultBranch)}\` (${repoSummary.openPrs.length} open PRs).`
       : `Checked active runs (${ctx.activeRuns.length}) and touches overlap matrix.`;
 
-    await this.engine.postThreadMessage(agy, {
+    await this.postBridgeMessage(agy, {
       scopeKind: opts.scopeKind,
       scopeId: opts.scopeId,
       body:
@@ -487,12 +553,44 @@ export class MultiAgentBridge {
     return { parentRun, subRun: sub.subRun, prResult: sub.prResult };
   }
 
+  private async requireExternalWriteApproval(
+    subPrincipal: Principal,
+    subRun: Run,
+    actionDescription: string,
+  ): Promise<void> {
+    const approvalCard = await this.engine.askCard(subPrincipal, subRun.id, {
+      epoch: subRun.epoch,
+      type: 'approve',
+      prompt: `Approve external write: ${sanitizeExternalText(actionDescription, 140)}`,
+      options: ['approve', 'reject'],
+      assignee: { kind: 'role', id: 'lead' },
+      blocking: true,
+      onExpire: 'hold',
+    });
+    const resolved = await this.engine.awaitCard(
+      subPrincipal,
+      approvalCard.id,
+      this.approvalTimeoutMs,
+    );
+    if (resolved.status !== 'answered' || resolved.answerOption !== 'approve') {
+      throw Errors.forbidden(
+        `External write aborted: human lead approval required (card ${approvalCard.id} status=${resolved.status}, option=${resolved.answerOption ?? 'none'})`,
+      );
+    }
+  }
+
   async executeDriveSubagent(
     parentPrincipal: Principal,
     parentRun: Run,
     input: { title: string; userPrompt: string },
   ): Promise<{ subRun: Run; gdocResult?: GoogleDocResult }> {
+    if (this.activeSubruns.size >= this.maxActiveSubruns) {
+      throw Errors.conflict(
+        `Maximum concurrent sub-runs (${this.maxActiveSubruns}) reached; try again later`,
+      );
+    }
     const spawned = await this.engine.spawnSubrun(parentPrincipal, parentRun.id, {
+      epoch: parentRun.epoch,
       title: input.title,
       goal: `Search Google Drive context and create a real Google Doc for: ${input.userPrompt}`,
       subagentId: 'muse-sub-drive',
@@ -528,6 +626,11 @@ export class MultiAgentBridge {
 
       let gdocResult: GoogleDocResult;
       if (this.executeRealTools) {
+        await this.requireExternalWriteApproval(
+          subPrincipal,
+          subRun,
+          `Create Google Doc "${input.title}" via gdocs CLI`,
+        );
         const docTitle = `Ripple Workspace — Multi-Agent Dialogue & Architecture Spec (${new Date().toISOString().slice(0, 16)}Z)`;
         gdocResult = await createGoogleDoc({
           title: docTitle,
@@ -545,7 +648,7 @@ export class MultiAgentBridge {
               body:
                 files.length > 0
                   ? `Recent Drive files discovered via gdrive CLI:\n` +
-                    files.map((f) => `- ${f.name} (${f.url})`).join('\n')
+                    files.map((f) => `- ${sanitizeExternalText(f.name)} (${f.url})`).join('\n')
                   : 'Connected to 5 TB Google Drive workspace via /opt/antigravity/bin/gdrive.',
             },
             {
@@ -592,7 +695,7 @@ export class MultiAgentBridge {
         artifactsToAttach.push({
           kind: 'drive',
           ref: files[0].url,
-          title: `Drive Reference: ${files[0].name}`,
+          title: `Drive Reference: ${sanitizeExternalText(files[0].name)}`,
           url: files[0].url,
           contentHash: files[0].id,
         });
@@ -632,7 +735,13 @@ export class MultiAgentBridge {
     parentRun: Run,
     input: { title: string; userPrompt: string; linkedGdocUrl?: string },
   ): Promise<{ subRun: Run; prResult?: GitHubPrResult }> {
+    if (this.activeSubruns.size >= this.maxActiveSubruns) {
+      throw Errors.conflict(
+        `Maximum concurrent sub-runs (${this.maxActiveSubruns}) reached; try again later`,
+      );
+    }
     const spawned = await this.engine.spawnSubrun(parentPrincipal, parentRun.id, {
+      epoch: parentRun.epoch,
       title: `Create GitHub Branch & PR: ${input.title}`,
       goal: `Create isolated branch, commit sub-agent spec/report, and open a real GitHub Pull Request on dweidai/ripple via gh CLI.`,
       subagentId: 'agy-sub-github',
@@ -667,6 +776,11 @@ export class MultiAgentBridge {
 
       let prResult: GitHubPrResult;
       if (this.executeRealTools) {
+        await this.requireExternalWriteApproval(
+          subPrincipal,
+          subRun,
+          `Create GitHub branch & Pull Request "${input.title}" via gh CLI`,
+        );
         const prTitle = `feat(ripple): sub-agent workspace sync & spec (${new Date().toISOString().slice(11, 16)} UTC)`;
         const prBody =
           `## Summary\n` +

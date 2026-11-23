@@ -68,6 +68,9 @@ export const Errors = {
       { cycle: chain },
     ),
 
+  conflict: (msg: string) =>
+    new RippleError('conflict', 409, msg),
+
   badRequest: (msg: string) =>
     new RippleError('bad_request', 400, msg),
 };

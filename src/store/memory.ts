@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { TERMINAL_RUN_STATUSES } from '../types.js';
@@ -13,7 +14,18 @@ import type {
   ThreadMessage,
   MessageReadReceipt,
 } from '../types.js';
-import type { EventListener, Store, TokenRecord } from './interface.js';
+import {
+  DEFAULT_IDEMPOTENCY_TTL_MS,
+  hashIdempotencyScope,
+  type EventListener,
+  type IdempotencyScope,
+  type Store,
+  type TokenRecord,
+} from './interface.js';
+
+const MAX_EVENTS = 2000;
+const MAX_THREADS = 5000;
+const MAX_IDEMPOTENCY = 5000;
 
 interface PersistedState {
   workspaces: Array<[string, string]>;
@@ -44,7 +56,7 @@ export class MemoryStore implements Store {
   private events: RippleEvent[] = [];
   private seq = 0;
   private listeners = new Map<string, Set<EventListener>>();
-  private idempotency = new Map<string, unknown>();
+  private idempotency = new Map<string, { response: unknown; expiresAt: number }>();
   private saveTimer?: NodeJS.Timeout;
   private savingPromise: Promise<void> = Promise.resolve();
 
@@ -110,9 +122,9 @@ export class MemoryStore implements Store {
           events: this.events.slice(-500),
           seq: this.seq,
         };
-        await fs.mkdir(path.dirname(stateFile), { recursive: true });
-        const tmpFile = `${stateFile}.tmp`;
-        await fs.writeFile(tmpFile, JSON.stringify(snapshot, null, 2), 'utf8');
+        await fs.mkdir(path.dirname(stateFile), { recursive: true, mode: 0o700 });
+        const tmpFile = `${stateFile}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+        await fs.writeFile(tmpFile, JSON.stringify(snapshot, null, 2), { encoding: 'utf8', mode: 0o600 });
         await fs.rename(tmpFile, stateFile);
       })
       .catch((err) => {
@@ -357,6 +369,9 @@ export class MemoryStore implements Store {
       readBy: [...(msg.readBy ?? [])],
     };
     this.threads.push(copy);
+    if (this.threads.length > MAX_THREADS) {
+      this.threads.splice(0, this.threads.length - MAX_THREADS);
+    }
     this.schedulePersist();
     return { ...copy, mentions: [...copy.mentions], readBy: [...(copy.readBy ?? [])] };
   }
@@ -399,6 +414,9 @@ export class MemoryStore implements Store {
     this.seq += 1;
     const full: RippleEvent = { ...event, seq: this.seq };
     this.events.push(full);
+    if (this.events.length > MAX_EVENTS) {
+      this.events.splice(0, this.events.length - MAX_EVENTS);
+    }
     this.schedulePersist();
     const set = this.listeners.get(event.wsId);
     if (set) {
@@ -429,12 +447,37 @@ export class MemoryStore implements Store {
     };
   }
 
-  async getIdempotency(key: string): Promise<unknown | undefined> {
-    return this.idempotency.get(key);
+  async getIdempotency(scope: IdempotencyScope): Promise<unknown | undefined> {
+    const hash = hashIdempotencyScope(scope);
+    const entry = this.idempotency.get(hash);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= Date.now()) {
+      this.idempotency.delete(hash);
+      return undefined;
+    }
+    return entry.response;
   }
 
-  async saveIdempotency(key: string, _wsId: string, response: unknown): Promise<void> {
-    this.idempotency.set(key, response);
+  async saveIdempotency(
+    scope: IdempotencyScope,
+    response: unknown,
+    ttlMs = DEFAULT_IDEMPOTENCY_TTL_MS,
+  ): Promise<void> {
+    const now = Date.now();
+    if (this.idempotency.size >= MAX_IDEMPOTENCY) {
+      for (const [k, v] of this.idempotency.entries()) {
+        if (v.expiresAt <= now) {
+          this.idempotency.delete(k);
+        }
+      }
+      while (this.idempotency.size >= MAX_IDEMPOTENCY) {
+        const oldest = this.idempotency.keys().next().value;
+        if (oldest === undefined) break;
+        this.idempotency.delete(oldest);
+      }
+    }
+    const hash = hashIdempotencyScope(scope);
+    this.idempotency.set(hash, { response, expiresAt: now + ttlMs });
   }
 }
 
