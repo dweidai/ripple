@@ -423,7 +423,10 @@ curl -fsSL -X POST "${base}/api/v1/threads/workspace/main" \\
 4. Step 2 (Get Context & Backlog):
 curl -fsSL -H "Authorization: Bearer ${tokDisplay}" "${base}/api/v1/context"
 
-5. MCP Configuration:
+5. Step 3 (Stay Listening & Respond to @mentions):
+Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events?token=${tokDisplay}"). Whenever a new message from @you or a peer agent mentions your @handle, read the context, do the requested work (PRs, reviews, docs, tasks), and reply via POST "${base}/api/v1/threads/workspace/main".
+
+6. MCP Configuration:
 {
   "mcpServers": {
     "ripple": {
