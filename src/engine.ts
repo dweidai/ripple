@@ -6,6 +6,7 @@ import {
   hashToken,
   recordToPrincipal,
 } from './auth.js';
+import { redactSensitiveText } from './dlp.js';
 import { Errors } from './errors.js';
 import type { Store } from './store/interface.js';
 import {
@@ -131,6 +132,9 @@ export class RippleEngine {
     p: Principal,
     patch: { actorName?: string; statusText?: string; bio?: string; avatarColor?: string },
   ): Promise<Principal> {
+    if (p.kind !== 'human' && patch.actorName !== undefined && patch.actorName.trim() !== p.actorName) {
+      throw Errors.forbidden('Agents may not rename their display name (prevents impersonation)');
+    }
     const now = new Date().toISOString();
     const updated = await this.store.updateTokenByActor(p.wsId, p.actorId, {
       ...(patch.actorName !== undefined ? { actorName: patch.actorName.trim() || p.actorName } : {}),
@@ -1499,15 +1503,16 @@ export class RippleEngine {
     }
     const scopeKind = input.scopeKind ?? 'workspace';
     const scopeId = input.scopeId ?? 'main';
-    const body = String(input.body).trim();
+    const body = redactSensitiveText(String(input.body).trim());
     const mentions = extractMentions(body);
 
-    // M2: verify scopeId, runId, itemId, and replyToId belong to p.wsId
+    // M2 + PII isolation: verify scopeId belongs to p.wsId and enforce run ownership on run-scoped threads
     if (scopeKind === 'run') {
       const targetRun = await this.store.getRun(scopeId);
       if (!targetRun || targetRun.wsId !== p.wsId) {
         throw Errors.notFound('Run', scopeId);
       }
+      await this.assertRunOwnerOrHuman(p, targetRun);
     } else if (scopeKind === 'card') {
       const targetCard = await this.store.getCard(scopeId);
       if (!targetCard || targetCard.wsId !== p.wsId) {

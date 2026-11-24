@@ -35,10 +35,15 @@ export class PostgresStore implements Store {
   private readonly ssl?: { rejectUnauthorized: boolean };
 
   constructor(private readonly connectionString: string) {
+    const isLocalDb = /@(?:localhost|127\.0\.0\.1)(?::|\/|$)/i.test(connectionString);
     const useSsl =
-      process.env.RIPPLE_DB_SSL === '1' || /sslmode=require/i.test(connectionString);
+      process.env.RIPPLE_DB_SSL === '0'
+        ? false
+        : process.env.RIPPLE_DB_SSL === '1' ||
+          /sslmode=require/i.test(connectionString) ||
+          (process.env.NODE_ENV === 'production' && !isLocalDb);
     this.ssl = useSsl
-      ? { rejectUnauthorized: process.env.RIPPLE_DB_SSL_REJECT_UNAUTHORIZED !== '0' }
+      ? { rejectUnauthorized: process.env.RIPPLE_DB_SSL_REJECT_UNAUTHORIZED === '1' }
       : undefined;
     this.pool = new Pool({
       connectionString,

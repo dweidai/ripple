@@ -513,8 +513,30 @@ export function createRippleApp(
   // Auth middleware for /api/v1/*
   const api = new Hono<Env>();
 
+  // Per-IP rate limiter for session login (15 attempts / 60s)
+  const loginAttempts = new Map<string, number[]>();
+  const LOGIN_WINDOW_MS = 60_000;
+  const LOGIN_MAX_ATTEMPTS = 15;
+
   // Session cookie login / logout endpoints (H2)
   api.post('/auth/session', async (c) => {
+    const ip =
+      c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
+      c.req.header('x-real-ip') ||
+      'local';
+    const now = Date.now();
+    const recent = (loginAttempts.get(ip) ?? []).filter((ts) => now - ts < LOGIN_WINDOW_MS);
+    if (recent.length >= LOGIN_MAX_ATTEMPTS) {
+      return c.json({ error: 'rate_limited', message: 'Too many login attempts; try again later' }, 429);
+    }
+    recent.push(now);
+    loginAttempts.set(ip, recent);
+    if (loginAttempts.size > 1000) {
+      for (const [k, v] of loginAttempts) {
+        if (v.every((ts) => now - ts >= LOGIN_WINDOW_MS)) loginAttempts.delete(k);
+      }
+    }
+
     const body = await c.req.json().catch(() => null);
     const rawToken = typeof body?.token === 'string' ? body.token.trim() : '';
     if (!rawToken) throw Errors.badRequest('token is required');
@@ -704,6 +726,8 @@ export function createRippleApp(
     });
   });
 
+  const consumedApprovalCards = new Set<string>();
+
   // Helper: gate host-credentialed external integrations behind lead role or capability (+ human lead approval for writes) (C3)
   async function assertIntegrationAccess(
     p: Principal,
@@ -748,6 +772,10 @@ export function createRippleApp(
         `Approval card '${cardId}' must be approved by a human workspace lead`,
       );
     }
+    if (consumedApprovalCards.has(cardId)) {
+      throw Errors.forbidden(`Approval card '${cardId}' has already been consumed`);
+    }
+    consumedApprovalCards.add(cardId);
   }
 
   // Self-service agent invitation & token minting
@@ -1164,9 +1192,15 @@ export function createRippleApp(
     const p = c.get('principal');
     const body = await c.req.json();
     if (body.action === 'status' || body.action === 'inspect') {
+      await assertIntegrationAccess(p, { capability: 'github', isWrite: false });
       const status = await inspectGitHubRepo(body.repo);
       return c.json(status);
     }
+    await assertIntegrationAccess(p, {
+      capability: 'github',
+      isWrite: true,
+      approvalCardId: body.approvalCardId ?? body.approval_card_id,
+    });
     const pr = await createGitHubPullRequest({
       repo: body.repo,
       title: body.title ?? 'Ripple Sub-Agent Automated PR',
@@ -1199,19 +1233,27 @@ export function createRippleApp(
     const action = body.action ?? (body.title ? 'create_doc' : 'list');
 
     if (action === 'list') {
+      await assertIntegrationAccess(p, { capability: 'gdrive', isWrite: false });
       const files = await listRecentDriveFiles(body.limit ?? 10);
       return c.json({ files });
     }
     if (action === 'search') {
+      await assertIntegrationAccess(p, { capability: 'gdrive', isWrite: false });
       const files = await searchDriveFiles(body.query ?? '', body.limit ?? 10);
       return c.json({ files });
     }
     if (action === 'read') {
+      await assertIntegrationAccess(p, { capability: 'gdocs', isWrite: false });
       if (!body.docId) throw Errors.badRequest('docId is required for read action');
       const doc = await readGoogleDoc(body.docId);
       return c.json(doc);
     }
 
+    await assertIntegrationAccess(p, {
+      capability: 'gdocs',
+      isWrite: true,
+      approvalCardId: body.approvalCardId ?? body.approval_card_id,
+    });
     const doc = await createGoogleDoc({
       title: body.title ?? 'Ripple Sub-Agent Google Doc',
       heading: body.heading,
@@ -1235,7 +1277,7 @@ export function createRippleApp(
     return c.json(doc, 201);
   });
 
-  // SSE stream with Last-Event-ID gapless replay
+  // SSE stream with Last-Event-ID gapless replay & instant teardown on token revocation
   api.get('/events', async (c) => {
     const p = c.get('principal');
     const afterParam = c.req.query('after');
@@ -1243,11 +1285,18 @@ export function createRippleApp(
     const skipReplay = afterParam === 'latest' && !lastIdHeader;
     const lastId = skipReplay ? 0 : Number(lastIdHeader ?? afterParam ?? 0);
     const encoder = new TextEncoder();
+    const sseKey = `${p.wsId}:${p.actorId}`;
 
     const stream = new ReadableStream({
       async start(controller) {
+        let closed = false;
         const send = (ev: { seq: number; type: string }) => {
-          controller.enqueue(encoder.encode(`id: ${ev.seq}\nevent: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`));
+          if (closed) return;
+          try {
+            controller.enqueue(encoder.encode(`id: ${ev.seq}\nevent: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`));
+          } catch {
+            closeStream();
+          }
         };
         if (!skipReplay) {
           const missed = await engine.store.listEvents(p.wsId, lastId, 100);
@@ -1258,29 +1307,46 @@ export function createRippleApp(
 
         const unsub = engine.store.subscribe(p.wsId, (ev) => send(ev));
         const ping = setInterval(() => {
+          if (closed) return;
           try {
             controller.enqueue(encoder.encode(': ping\n\n'));
           } catch {
-            clearInterval(ping);
+            closeStream();
           }
         }, 15_000);
 
-        c.req.raw.signal.addEventListener('abort', () => {
+        const closeStream = () => {
+          if (closed) return;
+          closed = true;
           clearInterval(ping);
           unsub();
+          const set = activeSseClosers.get(sseKey);
+          if (set) {
+            set.delete(closeStream);
+            if (set.size === 0) activeSseClosers.delete(sseKey);
+          }
           try {
             controller.close();
           } catch {
             // already closed
           }
-        });
+        };
+
+        let set = activeSseClosers.get(sseKey);
+        if (!set) {
+          set = new Set();
+          activeSseClosers.set(sseKey, set);
+        }
+        set.add(closeStream);
+
+        c.req.raw.signal.addEventListener('abort', closeStream);
       },
     });
 
     return new Response(stream, {
       headers: {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
+        'Cache-Control': 'no-cache, no-store, no-transform',
         'X-Accel-Buffering': 'no',
         Connection: 'keep-alive',
       },
@@ -1303,11 +1369,16 @@ export function createRippleHttpServer(
   return http.createServer(async (req, res) => {
     const url = req.url ?? '/';
     if (url === '/mcp' || url.startsWith('/mcp?')) {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('X-Frame-Options', 'DENY');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      res.setHeader('Cache-Control', 'no-store');
       try {
         const parsedUrl = new URL(url, 'http://localhost');
-        const queryTok = parsedUrl.searchParams.get('token');
-        const authHeader =
-          req.headers.authorization ?? (queryTok ? `Bearer ${queryTok}` : undefined);
+        if (parsedUrl.searchParams.has('token')) {
+          throw Errors.unauthorized('Query string tokens are disabled on /mcp; use Authorization: Bearer header');
+        }
+        const authHeader = req.headers.authorization;
         const principal = await auth.authenticate(authHeader);
         await handleMcpHttpRequest(req, res, engine, principal);
       } catch (err) {

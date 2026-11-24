@@ -15,5 +15,7 @@ RUN npm ci --omit=dev --ignore-scripts
 COPY --from=builder /app/dist ./dist
 COPY db ./db
 COPY public ./public
+RUN chown -R node:node /app
+USER node
 EXPOSE 8787
 CMD ["node", "dist/index.js"]

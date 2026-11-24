@@ -96,6 +96,7 @@ async function startTestWorkspace(opts?: {
     actorName: 'Antigravity',
     kind: 'agent',
     sponsorHuman: 'you',
+    capabilities: ['github', 'code', 'subagents'],
     rawToken: agyToken,
   });
   await auth.mintToken({
@@ -104,6 +105,7 @@ async function startTestWorkspace(opts?: {
     actorName: 'Muse',
     kind: 'agent',
     sponsorHuman: 'you',
+    capabilities: ['gdrive', 'gdocs', 'subagents'],
     rawToken: museToken,
   });
   await auth.mintToken({
