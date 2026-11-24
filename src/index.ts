@@ -9,6 +9,7 @@ import { MemoryStore } from './store/memory.js';
 import { PostgresStore } from './store/postgres.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
+const HOST = process.env.HOST ?? process.env.RIPPLE_HOST ?? '127.0.0.1';
 const DATABASE_URL = process.env.DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_URL ?? `http://localhost:${PORT}`;
 const WORKSPACE_ID = process.env.RIPPLE_WS_ID ?? 'ws_default';
@@ -45,7 +46,7 @@ async function main() {
     try {
       const fs = await import('node:fs');
       const tokenPath = path.resolve(path.dirname(STATE_FILE), 'human_token.txt');
-      fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
+      fs.mkdirSync(path.dirname(tokenPath), { recursive: true, mode: 0o700 });
       fs.writeFileSync(tokenPath, human.rawToken + '\n', { mode: 0o600 });
     } catch {
       // ignore if read-only
@@ -102,8 +103,8 @@ async function main() {
   }, 15_000);
 
   const server = createRippleHttpServer(engine, auth, PUBLIC_URL, bridge);
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[ripple] Control plane listening on ${PUBLIC_URL} (port ${PORT})`);
+  server.listen(PORT, HOST, () => {
+    console.log(`[ripple] Control plane listening on ${PUBLIC_URL} (${HOST}:${PORT})`);
     console.log(`[ripple] Storage : ${DATABASE_URL ? 'Postgres' : `File-backed MemoryStore (${STATE_FILE})`}`);
     console.log(`[ripple] Bridge  : Antigravity (@agy) & Muse (@muse) active with gh/gdrive/gdocs sub-agents`);
     console.log(`[ripple] MCP     : ${PUBLIC_URL}/mcp`);

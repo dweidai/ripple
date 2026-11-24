@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS tokens (
   last_seen_at TIMESTAMPTZ,
   status_text TEXT,
   online BOOLEAN NOT NULL DEFAULT TRUE,
-  raw_token TEXT,
+  expires_at TIMESTAMPTZ,
   revoked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS thread_messages (
   item_id TEXT,
   hop_count INT NOT NULL DEFAULT 0,
   steer_id TEXT REFERENCES steers(id) ON DELETE SET NULL,
+  read_by JSONB NOT NULL DEFAULT '[]',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -196,6 +197,7 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   key TEXT PRIMARY KEY,
   ws_id TEXT NOT NULL,
   response JSONB NOT NULL,
+  expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

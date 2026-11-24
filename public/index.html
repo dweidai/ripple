@@ -4,64 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Ripple — Minimalist Team & AI Chat</title>
-  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            brand: {
-              50: '#fff7ed',
-              100: '#ffedd5',
-              400: '#fb923c',
-              500: '#f97316',
-              coral: '#ff6239',
-              coralHover: '#ea552e',
-              peachBg: '#fff6f1',
-              borderSubtle: '#f3eae5'
-            },
-            surface: {
-              canvas: '#f4f3f0',
-              card: '#ffffff',
-              muted: '#71717a'
-            }
-          },
-          borderRadius: {
-            '2.5xl': '1.25rem',
-            '3xl': '1.5rem',
-            '4xl': '2rem'
-          },
-          boxShadow: {
-            'soft': '0 8px 30px rgba(0, 0, 0, 0.04)',
-            'bubble': '0 2px 10px rgba(0, 0, 0, 0.02)',
-            'btn': '0 4px 14px rgba(255, 98, 57, 0.28)'
-          }
-        }
-      }
-    };
-  </script>
-  <style>
-    ::-webkit-scrollbar { width: 5px; height: 5px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #e4e4e7; border-radius: 9999px; }
-    ::-webkit-scrollbar-thumb:hover { background: #d4d4d8; }
-    .no-scrollbar::-webkit-scrollbar { display: none; }
-    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-
-    .view-pane { display: none; }
-    .view-pane.active { display: flex; }
-
-    .modal-backdrop { display: none; }
-    .modal-backdrop.open { display: flex; }
-
-    @media (max-width: 768px) {
-      body { padding: 10px !important; }
-      .mobile-hide-sidebar { display: none; }
-      .mobile-show-sidebar { display: flex !important; }
-      .mobile-hide-main { display: none !important; }
-      .chat-height-mobile { max-height: calc(100dvh - 235px) !important; min-height: 360px !important; }
-    }
-  </style>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/app.js" defer></script>
 </head>
 <body class="bg-[#f3f3f0] min-h-screen text-slate-800 font-sans antialiased flex flex-col justify-between p-4 md:p-6 lg:p-8">
 
@@ -87,17 +31,17 @@
               <path d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
             </svg>
           </span>
-          <input id="global-search" oninput="renderAll()" class="w-full bg-slate-50 border-none rounded-full pl-10 pr-4 py-2 text-sm text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-orange-200" placeholder="Search conversations, agents, tasks..." type="text" />
+          <input id="global-search" class="w-full bg-slate-50 border-none rounded-full pl-10 pr-4 py-2 text-sm text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-orange-200" placeholder="Search conversations, agents, tasks..." type="text" />
         </div>
       </div>
 
       <!-- Global Header Actions -->
       <div class="flex items-center space-x-2.5 sm:space-x-3">
-        <button onclick="toggleMobileSidebar()" class="lg:hidden px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-full border border-slate-200/70 transition">
+        <button type="button" data-action="toggle-mobile-sidebar" class="lg:hidden px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-full border border-slate-200/70 transition">
           Agents
         </button>
 
-        <button onclick="openInviteModal()" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-3.5 py-2 rounded-full flex items-center space-x-1.5 shadow-btn transition">
+        <button type="button" data-action="open-invite-modal" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-3.5 py-2 rounded-full flex items-center space-x-1.5 shadow-btn transition">
           <span>+</span>
           <span>Invite</span>
         </button>
@@ -122,28 +66,28 @@
       <div>
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-xl font-bold tracking-tight text-slate-900">Messages</h2>
-          <button onclick="toggleMobileSidebar(false)" class="lg:hidden text-xs text-slate-400 hover:text-slate-700 px-2 py-1 rounded-lg">Done</button>
+          <button type="button" data-action="close-mobile-sidebar" class="lg:hidden text-xs text-slate-400 hover:text-slate-700 px-2 py-1 rounded-lg">Done</button>
         </div>
 
         <!-- Filter Tabs -->
         <div class="flex items-center space-x-5 text-sm font-medium border-b border-slate-100 pb-3 mb-4 overflow-x-auto no-scrollbar">
-          <button onclick="switchTab('chat')" id="side-tab-chat" class="side-tab text-brand-coral relative pb-1 whitespace-nowrap">
+          <button type="button" data-action="switch-tab" data-tab="chat" id="side-tab-chat" class="side-tab text-brand-coral relative pb-1 whitespace-nowrap">
             Dialogue
             <span class="side-tab-bar absolute bottom-0 left-0 w-full h-[2px] bg-brand-coral rounded-full"></span>
           </button>
-          <button onclick="switchTab('tasks')" id="side-tab-tasks" class="side-tab text-slate-400 hover:text-slate-600 relative pb-1 whitespace-nowrap transition flex items-center gap-1.5">
+          <button type="button" data-action="switch-tab" data-tab="tasks" id="side-tab-tasks" class="side-tab text-slate-400 hover:text-slate-600 relative pb-1 whitespace-nowrap transition flex items-center gap-1.5">
             <span>Backlog</span>
-            <span id="side-tasks-badge" class="hidden text-[10px] bg-orange-100 text-brand-coral font-semibold px-1.5 py-0.2 rounded-full">0</span>
+            <span id="side-tasks-badge" class="hidden text-[10px] bg-orange-100 text-brand-coral font-semibold px-1.5 py-0.5 rounded-full">0</span>
           </button>
-          <button onclick="switchTab('runs')" id="side-tab-runs" class="side-tab text-slate-400 hover:text-slate-600 relative pb-1 whitespace-nowrap transition flex items-center gap-1.5">
+          <button type="button" data-action="switch-tab" data-tab="runs" id="side-tab-runs" class="side-tab text-slate-400 hover:text-slate-600 relative pb-1 whitespace-nowrap transition flex items-center gap-1.5">
             <span>Decisions</span>
-            <span id="side-cards-badge" class="hidden text-[10px] bg-brand-coral text-white font-semibold px-1.5 py-0.2 rounded-full">0</span>
+            <span id="side-cards-badge" class="hidden text-[10px] bg-brand-coral text-white font-semibold px-1.5 py-0.5 rounded-full">0</span>
           </button>
         </div>
 
         <!-- Invite Agent CTA Banner -->
         <div class="mb-4">
-          <button onclick="openInviteModal()" class="w-full bg-gradient-to-r from-orange-400 to-brand-coral hover:opacity-95 text-white font-medium py-3 px-4 rounded-2xl flex items-center justify-center space-x-2 shadow-btn transition">
+          <button type="button" data-action="open-invite-modal" class="w-full bg-gradient-to-r from-orange-400 to-brand-coral hover:opacity-95 text-white font-medium py-3 px-4 rounded-2xl flex items-center justify-center space-x-2 shadow-btn transition">
             <svg class="w-4 h-4 fill-current text-orange-100" viewBox="0 0 24 24">
               <path d="M12 2L9.5 8.5L3 11L9.5 13.5L12 20L14.5 13.5L21 11L14.5 8.5L12 2Z"></path>
             </svg>
@@ -186,12 +130,12 @@
 
         <!-- Clean Pill View Switcher -->
         <div class="flex items-center bg-slate-50 p-1 rounded-full border border-slate-100 text-xs font-medium">
-          <button onclick="switchTab('chat')" id="pill-tab-chat" class="pill-tab px-3 py-1.5 rounded-full bg-white text-slate-900 shadow-sm transition">Chat</button>
-          <button onclick="switchTab('tasks')" id="pill-tab-tasks" class="pill-tab px-3 py-1.5 rounded-full text-slate-500 hover:text-slate-800 transition flex items-center gap-1">
+          <button type="button" data-action="switch-tab" data-tab="chat" id="pill-tab-chat" class="pill-tab px-3 py-1.5 rounded-full bg-white text-slate-900 shadow-sm transition">Chat</button>
+          <button type="button" data-action="switch-tab" data-tab="tasks" id="pill-tab-tasks" class="pill-tab px-3 py-1.5 rounded-full text-slate-500 hover:text-slate-800 transition flex items-center gap-1">
             <span>Backlog</span>
             <span id="tasks-badge" class="hidden text-[10px] bg-orange-100 text-brand-coral px-1.5 rounded-full font-semibold">0</span>
           </button>
-          <button onclick="switchTab('runs')" id="pill-tab-runs" class="pill-tab px-3 py-1.5 rounded-full text-slate-500 hover:text-slate-800 transition flex items-center gap-1">
+          <button type="button" data-action="switch-tab" data-tab="runs" id="pill-tab-runs" class="pill-tab px-3 py-1.5 rounded-full text-slate-500 hover:text-slate-800 transition flex items-center gap-1">
             <span>Decisions</span>
             <span id="cards-badge" class="hidden text-[10px] bg-brand-coral text-white px-1.5 rounded-full font-semibold">0</span>
           </button>
@@ -206,11 +150,11 @@
 
         <!-- Bottom Pill Input Bar -->
         <div class="pt-3">
-          <form onsubmit="handleSendChat(event)" class="relative flex items-center bg-slate-50 border border-slate-200/80 rounded-full px-2.5 py-1.5 shadow-sm hover:border-slate-300 focus-within:border-brand-coral focus-within:ring-2 focus-within:ring-orange-100 transition">
-            <button type="button" onclick="insertTag('@agy ')" title="Mention Antigravity" class="px-2.5 py-1.5 text-xs font-semibold text-slate-500 hover:text-brand-coral hover:bg-orange-50 rounded-full transition">
+          <form id="chat-form" class="relative flex items-center bg-slate-50 border border-slate-200/80 rounded-full px-2.5 py-1.5 shadow-sm hover:border-slate-300 focus-within:border-brand-coral focus-within:ring-2 focus-within:ring-orange-100 transition">
+            <button type="button" data-action="insert-tag" data-tag="@agy " title="Mention Antigravity" class="px-2.5 py-1.5 text-xs font-semibold text-slate-500 hover:text-brand-coral hover:bg-orange-50 rounded-full transition">
               @agy
             </button>
-            <button type="button" onclick="insertTag('@muse ')" title="Mention Muse" class="px-2.5 py-1.5 text-xs font-semibold text-slate-500 hover:text-brand-coral hover:bg-orange-50 rounded-full transition">
+            <button type="button" data-action="insert-tag" data-tag="@muse " title="Mention Muse" class="px-2.5 py-1.5 text-xs font-semibold text-slate-500 hover:text-brand-coral hover:bg-orange-50 rounded-full transition">
               @muse
             </button>
             <input id="chat-input" class="flex-1 bg-transparent border-none text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-0 px-3 py-2 min-w-0" placeholder="Message #main, @agy, or @muse..." type="text" autocomplete="off" />
@@ -227,15 +171,15 @@
       <div id="view-tasks" class="view-pane flex-1 flex-col py-4 overflow-y-auto max-h-[600px]">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-base font-bold text-slate-900">Shared Backlog</h2>
-          <button onclick="toggleNewTaskInput()" class="bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold px-3.5 py-1.5 rounded-full transition">
+          <button type="button" data-action="toggle-new-task" class="bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold px-3.5 py-1.5 rounded-full transition">
             + New Task
           </button>
         </div>
 
         <div id="new-task-box" class="hidden mb-4 p-3 bg-slate-50 rounded-2xl border border-slate-200/80">
           <div class="flex gap-2">
-            <input id="new-task-title-input" type="text" placeholder="What needs to be done?" class="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-200" onkeydown="if(event.key==='Enter') submitNewTask()" />
-            <button onclick="submitNewTask()" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-4 py-2 rounded-xl transition">Add</button>
+            <input id="new-task-title-input" type="text" placeholder="What needs to be done?" class="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-200" />
+            <button type="button" data-action="submit-new-task" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-4 py-2 rounded-xl transition">Add</button>
           </div>
         </div>
 
@@ -267,16 +211,16 @@
           <h2 class="text-base font-bold text-slate-900">Invite an Agent to Ripple</h2>
           <p class="text-xs text-slate-400">Copy this prompt and send it to your agent — it will connect itself.</p>
         </div>
-        <button onclick="closeInviteModal()" class="w-8 h-8 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 flex items-center justify-center transition">✕</button>
+        <button type="button" data-action="close-invite-modal" class="w-8 h-8 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 flex items-center justify-center transition">✕</button>
       </div>
 
       <div class="p-6 space-y-4">
         <div class="flex flex-wrap gap-2">
-          <button class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-brand-coral text-white transition" onclick="selectPreset('agy', this)">Antigravity (@agy)</button>
-          <button class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" onclick="selectPreset('muse', this)">Muse (@muse)</button>
-          <button class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" onclick="selectPreset('openclaw', this)">OpenClaw</button>
-          <button class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" onclick="selectPreset('grok', this)">Grok</button>
-          <button class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" onclick="selectPreset('custom', this)">Custom</button>
+          <button type="button" class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-brand-coral text-white transition" data-action="select-preset" data-preset="agy">Antigravity (@agy)</button>
+          <button type="button" class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" data-action="select-preset" data-preset="muse">Muse (@muse)</button>
+          <button type="button" class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" data-action="select-preset" data-preset="openclaw">OpenClaw</button>
+          <button type="button" class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" data-action="select-preset" data-preset="grok">Grok</button>
+          <button type="button" class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" data-action="select-preset" data-preset="custom">Custom</button>
         </div>
 
         <pre id="prompt-preview" class="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 text-[11px] leading-relaxed text-slate-700 overflow-x-auto max-h-60 whitespace-pre-wrap font-mono"></pre>
@@ -287,8 +231,8 @@
       </div>
 
       <div class="px-6 py-4 bg-slate-50/70 border-t border-slate-100 flex justify-end gap-2">
-        <button onclick="closeInviteModal()" class="px-4 py-2 rounded-full text-xs font-medium text-slate-600 hover:bg-slate-100 transition">Close</button>
-        <button onclick="copyAgentPrompt()" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-5 py-2 rounded-full shadow-btn transition">
+        <button type="button" data-action="close-invite-modal" class="px-4 py-2 rounded-full text-xs font-medium text-slate-600 hover:bg-slate-100 transition">Close</button>
+        <button type="button" data-action="copy-agent-prompt" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-5 py-2 rounded-full shadow-btn transition">
           <span id="btn-copy-text">Copy Prompt for Agent</span>
         </button>
       </div>
@@ -302,573 +246,14 @@
         <h2 class="text-base font-bold text-slate-900">Sign in to Ripple</h2>
         <p class="text-xs text-slate-400 mt-1">Paste your workspace access token to continue.</p>
       </div>
-      <input id="auth-token-input" type="password" placeholder="rpl_human_..." class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-200" onkeydown="if(event.key==='Enter') submitAuthToken()" />
+      <input id="auth-token-input" type="password" placeholder="rpl_human_..." class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-200" />
       <div class="flex justify-end">
-        <button onclick="submitAuthToken()" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-5 py-2.5 rounded-full shadow-btn transition">Connect</button>
+        <button type="button" data-action="submit-auth-token" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-5 py-2.5 rounded-full shadow-btn transition">Connect</button>
       </div>
     </div>
   </div>
 
   <!-- Toast -->
   <div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs font-medium px-4 py-2.5 rounded-full shadow-lg z-50"></div>
-
-  <script>
-    const urlParams = new URLSearchParams(window.location.search);
-    const queryTok = urlParams.get('token');
-    if (queryTok) {
-      localStorage.setItem('ripple_token', queryTok);
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-    let token = localStorage.getItem('ripple_token') || '';
-
-    let snapshot = null;
-    let publicBase = window.location.origin;
-    let selectedPreset = 'agy';
-    let currentTab = 'chat';
-    let mintedTokenCache = {};
-
-    const AGENTS_META = {
-      agy: { actorId: 'agy', name: 'Antigravity (@agy)' },
-      muse: { actorId: 'muse', name: 'Muse (@muse)' },
-      openclaw: { actorId: 'openclaw', name: 'OpenClaw (@openclaw)' },
-      grok: { actorId: 'grok', name: 'Grok (@grok)' },
-      custom: { actorId: 'custom-agent', name: 'Custom Agent' }
-    };
-
-    function submitAuthToken() {
-      const val = document.getElementById('auth-token-input').value.trim();
-      if (!val) return;
-      token = val;
-      localStorage.setItem('ripple_token', token);
-      document.getElementById('auth-modal').classList.remove('open');
-      loadSnapshot();
-      connectSSE();
-    }
-
-    function toggleMobileSidebar(forceState) {
-      const aside = document.getElementById('left-sidebar');
-      const main = document.getElementById('main-area');
-      const show = typeof forceState === 'boolean' ? forceState : !aside.classList.contains('mobile-show-sidebar');
-      if (show) {
-        aside.classList.add('mobile-show-sidebar');
-        main.classList.add('mobile-hide-main');
-      } else {
-        aside.classList.remove('mobile-show-sidebar');
-        main.classList.remove('mobile-hide-main');
-      }
-    }
-
-    function switchTab(tabId) {
-      currentTab = tabId;
-      document.querySelectorAll('.view-pane').forEach(p => p.classList.remove('active'));
-      document.getElementById('view-' + tabId).classList.add('active');
-
-      // Update header pills
-      ['chat', 'tasks', 'runs'].forEach(id => {
-        const pill = document.getElementById('pill-tab-' + id);
-        if (id === tabId) {
-          pill.className = 'pill-tab px-3 py-1.5 rounded-full bg-white text-slate-900 shadow-sm transition flex items-center gap-1';
-        } else {
-          pill.className = 'pill-tab px-3 py-1.5 rounded-full text-slate-500 hover:text-slate-800 transition flex items-center gap-1';
-        }
-        const side = document.getElementById('side-tab-' + id);
-        if (side) {
-          if (id === tabId) {
-            side.classList.add('text-brand-coral');
-            side.classList.remove('text-slate-400');
-          } else {
-            side.classList.remove('text-brand-coral');
-            side.classList.add('text-slate-400');
-          }
-        }
-      });
-
-      toggleMobileSidebar(false);
-    }
-
-    function openInviteModal() {
-      document.getElementById('invite-modal').classList.add('open');
-      renderPromptPreview();
-    }
-
-    function closeInviteModal() {
-      document.getElementById('invite-modal').classList.remove('open');
-    }
-
-    function selectPreset(key, btnEl) {
-      selectedPreset = key;
-      document.querySelectorAll('.preset-btn').forEach(b => {
-        b.className = 'preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition';
-      });
-      if (btnEl) {
-        btnEl.className = 'preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-brand-coral text-white transition';
-      }
-      renderPromptPreview();
-    }
-
-    function buildPromptText(a, agentToken) {
-      const base = publicBase;
-      const mcpUrl = `${base}/mcp`;
-      const tokDisplay = agentToken || '<click "Copy Prompt for Agent" to mint a fresh token>';
-      return `You are invited to join David's collaborative workspace "Ripple" as ${a.name}.
-
-1. Workspace Endpoint: ${base}
-2. Your Bearer Token: ${tokDisplay}
-3. Step 1 (Check In):
-curl -fsSL -X POST "${base}/api/v1/threads/workspace/main" \\
-  -H "Authorization: Bearer ${tokDisplay}" \\
-  -H "Content-Type: application/json" \\
-  -d '{"body":"@you Hi David! ${a.name} is connected and ready to collaborate."}'
-
-4. Step 2 (Get Context & Backlog):
-curl -fsSL -H "Authorization: Bearer ${tokDisplay}" "${base}/api/v1/context"
-
-5. Step 3 (Stay Listening & Respond to @mentions):
-Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events?token=${tokDisplay}"). Whenever a new message from @you or a peer agent mentions your @handle, read the context, do the requested work (PRs, reviews, docs, tasks), and reply via POST "${base}/api/v1/threads/workspace/main".
-
-6. MCP Configuration:
-{
-  "mcpServers": {
-    "ripple": {
-      "url": "${mcpUrl}",
-      "headers": { "Authorization": "Bearer ${tokDisplay}" }
-    }
-  }
-}`;
-    }
-
-    function renderPromptPreview() {
-      const a = AGENTS_META[selectedPreset];
-      const base = publicBase;
-      document.getElementById('mcp-preview-url').textContent = `${base}/mcp`;
-      document.getElementById('prompt-preview').textContent = buildPromptText(a, mintedTokenCache[selectedPreset]);
-    }
-
-    async function copyAgentPrompt() {
-      const a = AGENTS_META[selectedPreset];
-      if (!mintedTokenCache[selectedPreset]) {
-        const res = await api('POST', '/api/v1/invites', {
-          actorId: a.actorId,
-          actorName: a.name,
-          kind: 'agent',
-          rotate: true,
-        });
-        if (!res || !res.rawToken) {
-          showToast('Sign in first to mint an invite token');
-          return;
-        }
-        mintedTokenCache[selectedPreset] = res.rawToken;
-        renderPromptPreview();
-        loadSnapshot();
-      }
-      const text = document.getElementById('prompt-preview').textContent;
-      try {
-        await navigator.clipboard.writeText(text);
-        showToast(`Minted token for ${a.name} & copied prompt!`);
-        const btnText = document.getElementById('btn-copy-text');
-        btnText.textContent = 'Copied!';
-        setTimeout(() => { btnText.textContent = 'Copy Prompt for Agent'; }, 2000);
-      } catch {
-        showToast('Minted token! Select text above to copy.');
-      }
-    }
-
-    function showToast(msg) {
-      const t = document.getElementById('toast');
-      t.textContent = msg;
-      t.classList.remove('hidden');
-      setTimeout(() => t.classList.add('hidden'), 2600);
-    }
-
-    function insertTag(tag) {
-      const input = document.getElementById('chat-input');
-      input.value += tag;
-      input.focus();
-      if (currentTab !== 'chat') switchTab('chat');
-    }
-
-    async function api(method, path, body) {
-      if (!token) {
-        document.getElementById('auth-modal').classList.add('open');
-        return null;
-      }
-      const res = await fetch(path, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      if (res.status === 401) {
-        document.getElementById('auth-modal').classList.add('open');
-        return null;
-      }
-      return res.json();
-    }
-
-    let refreshTimer = null;
-    let sseSource = null;
-    let lastRenderSig = '';
-    let lastMsgCount = 0;
-
-    function scheduleRefresh() {
-      if (refreshTimer) return;
-      refreshTimer = setTimeout(() => {
-        refreshTimer = null;
-        loadSnapshot();
-      }, 150);
-    }
-
-    async function loadSnapshot() {
-      try {
-        const data = await api('GET', '/api/v1/snapshot');
-        if (!data) return;
-        snapshot = data;
-        if (snapshot.publicUrl) publicBase = snapshot.publicUrl;
-        const sig = JSON.stringify({
-          m: (data.messages || []).length,
-          lm: (data.messages || []).slice(-1)[0]?.id,
-          rb: (data.messages || []).map(x => (x.readBy || []).map(r => r.actorId + (r.ack ? '!' : '') + (r.emoji || '')).join(',')),
-          i: (data.items || []).length,
-          c: (data.cards || []).map(x => x.id + x.status),
-          r: (data.runs || []).map(x => x.id + x.status),
-          a: (data.agents || []).length,
-          ar: (data.artifacts || []).length,
-          q: document.getElementById('global-search')?.value || ''
-        });
-        if (sig !== lastRenderSig) {
-          lastRenderSig = sig;
-          renderAll();
-        }
-      } catch (e) {
-        console.error('Snapshot error:', e);
-      }
-    }
-
-    function connectSSE() {
-      if (!token) return;
-      if (sseSource) {
-        try { sseSource.close(); } catch {}
-      }
-      const sse = new EventSource(`/api/v1/events?token=${encodeURIComponent(token)}&after=latest`);
-      sseSource = sse;
-      sse.onmessage = () => scheduleRefresh();
-      ['thread.message', 'thread.read', 'thread.ack', 'item.created', 'item.updated', 'run.claimed', 'run.planned', 'run.step', 'run.done', 'card.opened', 'card.answered', 'card.stale', 'artifact.added', 'principal.updated'].forEach(evt => {
-        sse.addEventListener(evt, () => scheduleRefresh());
-      });
-      sse.onerror = () => {
-        try { sse.close(); } catch {}
-        setTimeout(connectSSE, 3000);
-      };
-    }
-
-    async function ackMsg(msgId, emoji = '✅') {
-      await api('POST', `/api/v1/threads/workspace/main/messages/${encodeURIComponent(msgId)}/ack`, { emoji, ack: true });
-      loadSnapshot();
-    }
-
-    setInterval(() => {
-      if (document.visibilityState === 'visible' && token) loadSnapshot();
-    }, 3000);
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && token) {
-        loadSnapshot();
-        connectSSE();
-      }
-    });
-    window.addEventListener('focus', () => {
-      if (token) loadSnapshot();
-    });
-
-    async function revokeAgent(e, actorId) {
-      e.stopPropagation();
-      await api('DELETE', `/api/v1/tokens/${encodeURIComponent(actorId)}`);
-      showToast(`Revoked @${actorId}`);
-      loadSnapshot();
-    }
-
-    async function handleSendChat(e) {
-      e.preventDefault();
-      const input = document.getElementById('chat-input');
-      const text = input.value.trim();
-      if (!text) return;
-      input.value = '';
-      await api('POST', '/api/v1/threads/workspace/main', { body: text });
-      loadSnapshot();
-    }
-
-    async function handleAnswerCard(cardId, option, onPin) {
-      await api('POST', `/api/v1/cards/${cardId}/answer`, { option, onPin });
-      showToast(`Decision recorded: ${option}`);
-      loadSnapshot();
-    }
-
-    async function toggleTask(itemId, currentStatus) {
-      const newStatus = currentStatus === 'done' ? 'open' : 'done';
-      await api('PATCH', `/api/v1/items/${itemId}`, { status: newStatus });
-      loadSnapshot();
-    }
-
-    function toggleNewTaskInput() {
-      const box = document.getElementById('new-task-box');
-      box.classList.toggle('hidden');
-      if (!box.classList.contains('hidden')) document.getElementById('new-task-title-input').focus();
-    }
-
-    async function submitNewTask() {
-      const input = document.getElementById('new-task-title-input');
-      const title = input.value.trim();
-      if (!title) return;
-      input.value = '';
-      document.getElementById('new-task-box').classList.add('hidden');
-      await api('POST', '/api/v1/items', { title, priority: 'P1' });
-      loadSnapshot();
-    }
-
-    function copyText(str) {
-      navigator.clipboard?.writeText(str).then(() => showToast('Copied message'));
-    }
-
-    function esc(s) {
-      return String(s ?? '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
-    }
-
-    function renderAll() {
-      if (!snapshot) return;
-      const query = (document.getElementById('global-search')?.value || '').trim().toLowerCase();
-
-      const participants = snapshot.agents || [];
-      const human = participants.find(p => p.kind === 'human');
-      const agents = participants.filter(p => p.kind === 'agent');
-      const msgs = snapshot.messages || [];
-      const cards = snapshot.cards || [];
-      const artifacts = snapshot.artifacts || [];
-      const items = snapshot.items || [];
-      const runs = snapshot.runs || [];
-
-      // Header presence
-      document.getElementById('header-presence').textContent =
-        `${human?.actorName || 'David'} • ${agents.length} AI agent${agents.length === 1 ? '' : 's'} connected`;
-      document.getElementById('sidebar-agent-count').textContent = `${agents.length} agents`;
-
-      // Sidebar Roster
-      const lastMsg = msgs[msgs.length - 1];
-      let rosterHtml = `
-        <div onclick="switchTab('chat')" class="p-3 rounded-2xl bg-orange-50/50 hover:bg-orange-50 transition cursor-pointer flex items-center justify-between border border-orange-100/70">
-          <div class="flex items-center space-x-3 min-w-0">
-            <div class="relative flex-shrink-0">
-              <div class="w-10 h-10 rounded-full bg-gradient-to-br from-orange-400 to-brand-coral text-white flex items-center justify-center font-bold text-xs shadow-sm">#</div>
-              <span class="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 rounded-full ring-2 ring-white"></span>
-            </div>
-            <div class="min-w-0">
-              <p class="text-sm font-semibold text-slate-900 truncate">main</p>
-              <p class="text-xs text-brand-coral truncate font-medium">${esc(lastMsg ? lastMsg.author + ': ' + lastMsg.body : 'Active workspace channel')}</p>
-            </div>
-          </div>
-          <span class="text-[11px] text-slate-400 flex-shrink-0 ml-2">${msgs.length}</span>
-        </div>
-      `;
-
-      if (agents.length === 0) {
-        rosterHtml += `
-          <div class="p-4 text-center rounded-2xl bg-slate-50/70 border border-dashed border-slate-200 mt-2">
-            <p class="text-xs text-slate-500 font-medium">No agents invited yet</p>
-            <p class="text-[11px] text-slate-400 mt-0.5">Tap Invite above to generate a prompt for Antigravity or Muse.</p>
-          </div>
-        `;
-      }
-
-      agents.forEach(a => {
-        const isAgy = a.actorId === 'agy';
-        const badgeBg = isAgy ? 'bg-orange-100 text-brand-coral ring-orange-200' : 'bg-violet-100 text-violet-600 ring-violet-200';
-        const initials = (a.actorName || a.actorId || 'A').slice(0, 2).toUpperCase();
-        rosterHtml += `
-          <div onclick="insertTag('@${esc(a.actorId)} ')" class="p-3 rounded-2xl hover:bg-slate-50 transition cursor-pointer flex items-center justify-between group">
-            <div class="flex items-center space-x-3 min-w-0">
-              <div class="relative flex-shrink-0">
-                <div class="w-10 h-10 rounded-full ${badgeBg} flex items-center justify-center font-semibold text-xs ring-1">${esc(initials)}</div>
-                <span class="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-orange-400 rounded-full flex items-center justify-center text-[8px] text-white ring-2 ring-white">✦</span>
-              </div>
-              <div class="min-w-0">
-                <div class="flex items-center space-x-1.5">
-                  <p class="text-sm font-medium text-slate-800 truncate">${esc(a.actorName || a.actorId)}</p>
-                  <span class="text-[10px] px-1.5 bg-slate-100 text-slate-500 rounded">AI</span>
-                </div>
-                <p class="text-xs text-slate-400 truncate">Tap to @${esc(a.actorId)} in chat</p>
-              </div>
-            </div>
-            <button onclick="revokeAgent(event, '${esc(a.actorId)}')" title="Revoke access" class="opacity-60 hover:opacity-100 text-[10px] text-slate-400 hover:text-rose-600 px-2 py-1 rounded-full hover:bg-rose-50 transition">Revoke</button>
-          </div>
-        `;
-      });
-      document.getElementById('sidebar-roster').innerHTML = rosterHtml;
-
-      // Chat Stream
-      const filteredMsgs = query ? msgs.filter(m => (m.body + ' ' + m.author).toLowerCase().includes(query)) : msgs;
-      let chatHtml = `
-        <div class="flex justify-center">
-          <span class="text-[11px] font-medium text-slate-400 bg-slate-50 border border-slate-100 px-3 py-1 rounded-full">
-            Today · Synchronized workspace
-          </span>
-        </div>
-      `;
-
-      filteredMsgs.forEach(m => {
-        const isHuman = m.authorKind === 'human';
-        const time = new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        const reads = m.readBy || [];
-        const readPills = reads.map(r => {
-          const icon = r.ack ? (r.emoji || '✅') : '👀';
-          const title = `${r.actorName || r.actorId} ${r.ack ? 'acknowledged' : 'read'} at ${new Date(r.readAt).toLocaleTimeString()}`;
-          return `<span title="${esc(title)}" class="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full ${r.ack ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/70' : 'bg-slate-100 text-slate-500'}">${esc(icon)} @${esc(r.actorId)}</span>`;
-        }).join('');
-
-        if (isHuman) {
-          chatHtml += `
-            <div class="flex justify-end items-end space-x-2">
-              <div class="flex flex-col items-end max-w-xl">
-                <div class="bg-white border border-slate-200/80 rounded-2xl rounded-tr-sm px-4 py-3 shadow-bubble text-slate-800 text-sm leading-relaxed whitespace-pre-wrap">${esc(m.body)}</div>
-                <div class="flex flex-wrap items-center justify-end gap-1.5 mt-1 mr-1">
-                  ${readPills}
-                  <span class="text-[10px] text-slate-400">${time}</span>
-                </div>
-              </div>
-              <div class="w-7 h-7 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center text-[10px] font-semibold mb-4 flex-shrink-0">DD</div>
-            </div>
-          `;
-        } else {
-          const isAgy = m.authorId === 'agy';
-          const avatarStyle = isAgy ? 'bg-brand-coral text-white' : 'bg-violet-500 text-white';
-          const bubbleStyle = isAgy ? 'bg-brand-peachBg border-brand-borderSubtle' : 'bg-violet-50/50 border-violet-100';
-          const nameStyle = isAgy ? 'text-brand-coral' : 'text-violet-700';
-          chatHtml += `
-            <div class="flex items-start space-x-3 max-w-2xl">
-              <div class="w-8 h-8 rounded-full ${avatarStyle} flex items-center justify-center flex-shrink-0 shadow-sm mt-0.5 text-xs font-bold">
-                ${esc((m.author || 'A').slice(0, 1).toUpperCase())}
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="${bubbleStyle} border rounded-2xl rounded-tl-sm p-4 text-slate-800 text-sm leading-relaxed shadow-sm">
-                  <div class="flex items-center space-x-2 mb-1.5">
-                    <span class="font-semibold text-xs ${nameStyle}">${esc(m.author)}</span>
-                    <span class="text-[10px] text-slate-400">${time}</span>
-                  </div>
-                  <div class="text-slate-700 whitespace-pre-wrap">${esc(m.body)}</div>
-                </div>
-                <div class="flex flex-wrap items-center gap-2 mt-1 pl-1 text-slate-400 text-[11px]">
-                  <button onclick="ackMsg('${esc(m.id)}', '✅')" class="hover:text-emerald-600 transition">✓ Ack</button>
-                  <button onclick="copyText(${JSON.stringify(m.body)})" class="hover:text-slate-600 transition">Copy</button>
-                  ${readPills}
-                </div>
-              </div>
-            </div>
-          `;
-        }
-      });
-
-      // Inline pending decision cards
-      const openCards = cards.filter(c => c.status === 'open');
-      openCards.forEach(c => {
-        chatHtml += `
-          <div class="max-w-xl mx-auto bg-orange-50/70 border border-orange-200/70 rounded-2xl p-4 shadow-sm">
-            <div class="flex items-center justify-between gap-2 mb-2">
-              <span class="text-xs font-semibold text-brand-coral">Decision Gate</span>
-              <span class="text-[10px] font-mono text-slate-400">pin ${esc(c.pin.value.slice(0, 7))}</span>
-            </div>
-            <p class="text-sm text-slate-800 font-medium mb-3">${esc(c.prompt)}</p>
-            ${c.diffPreview ? `<pre class="mb-3 bg-white border border-slate-200/70 p-2.5 rounded-xl text-[11px] overflow-x-auto text-slate-600">${esc(c.diffPreview)}</pre>` : ''}
-            <div class="flex flex-wrap gap-2">
-              <button onclick="handleAnswerCard('${c.id}', 'approve', '${c.pin.value}')" class="px-3.5 py-1.5 rounded-full bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold transition">Approve</button>
-              <button onclick="handleAnswerCard('${c.id}', 'approve_with_change', '${c.pin.value}')" class="px-3.5 py-1.5 rounded-full bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-medium transition">With Change</button>
-              <button onclick="handleAnswerCard('${c.id}', 'reject', '${c.pin.value}')" class="px-3.5 py-1.5 rounded-full bg-white border border-slate-200 hover:text-rose-600 text-slate-500 text-xs font-medium transition">Reject</button>
-            </div>
-          </div>
-        `;
-      });
-
-      // Inline recent PR & Doc deliverables
-      artifacts.slice(-3).forEach(a => {
-        const icon = a.kind === 'pr' ? 'PR' : (a.kind === 'gdoc' ? 'Doc' : 'File');
-        chatHtml += `
-          <div class="max-w-xl ml-11 bg-slate-50 border border-slate-200/70 rounded-2xl px-4 py-3 flex items-center justify-between gap-3">
-            <div class="min-w-0">
-              <div class="flex items-center gap-2">
-                <span class="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600">${esc(icon)}</span>
-                <span class="text-xs font-semibold text-slate-800 truncate">${esc(a.label || a.ref)}</span>
-              </div>
-            </div>
-            <a href="${esc(a.ref)}" target="_blank" class="text-xs font-semibold text-brand-coral hover:underline flex-shrink-0">Open ↗</a>
-          </div>
-        `;
-      });
-
-      const chatEl = document.getElementById('chat-stream');
-      chatEl.innerHTML = chatHtml;
-      chatEl.scrollTop = chatEl.scrollHeight;
-
-      // Badges
-      const pendingTasks = items.filter(i => i.status !== 'done');
-      ['tasks-badge', 'side-tasks-badge'].forEach(id => {
-        const el = document.getElementById(id);
-        el.textContent = pendingTasks.length;
-        el.classList.toggle('hidden', pendingTasks.length === 0);
-      });
-      ['cards-badge', 'side-cards-badge'].forEach(id => {
-        const el = document.getElementById(id);
-        el.textContent = openCards.length;
-        el.classList.toggle('hidden', openCards.length === 0);
-      });
-
-      // Backlog List
-      const filteredItems = query ? items.filter(i => (i.title + ' ' + (i.body || '')).toLowerCase().includes(query)) : items;
-      document.getElementById('task-list').innerHTML = filteredItems.map(item => `
-        <div class="p-3.5 rounded-2xl bg-slate-50/70 hover:bg-slate-50 border border-slate-100 flex items-start gap-3 transition">
-          <input type="checkbox" ${item.status === 'done' ? 'checked' : ''} onchange="toggleTask('${item.id}', '${item.status}')" class="mt-1 rounded text-brand-coral focus:ring-orange-200 border-slate-300 cursor-pointer" />
-          <div class="flex-1 min-w-0">
-            <div class="text-sm font-medium text-slate-800 ${item.status === 'done' ? 'line-through text-slate-400' : ''}">${esc(item.title)}</div>
-            ${item.body ? `<p class="text-xs text-slate-500 mt-0.5">${esc(item.body)}</p>` : ''}
-            <div class="flex flex-wrap gap-1.5 mt-2">
-              <span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600">${esc(item.priority)}</span>
-              <span class="text-[10px] font-medium px-2 py-0.5 rounded-full ${item.status === 'done' ? 'bg-emerald-50 text-emerald-700' : 'bg-orange-50 text-brand-coral'}">${esc(item.status)}</span>
-              ${item.assigneeId ? `<span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-500">@${esc(item.assigneeId)}</span>` : ''}
-            </div>
-          </div>
-        </div>
-      `).join('') || `<div class="text-center text-xs text-slate-400 py-10">No tasks in backlog.</div>`;
-
-      // Decisions & Runs List
-      document.getElementById('runs-cards-list').innerHTML = openCards.map(c => `
-        <div class="p-4 rounded-2xl bg-orange-50/60 border border-orange-200/70">
-          <div class="text-xs font-semibold text-brand-coral mb-1">Pending Decision</div>
-          <div class="text-sm font-medium text-slate-800 mb-3">${esc(c.prompt)}</div>
-          <div class="flex gap-2">
-            <button onclick="handleAnswerCard('${c.id}', 'approve', '${c.pin.value}')" class="px-3.5 py-1.5 rounded-full bg-brand-coral text-white text-xs font-semibold">Approve</button>
-            <button onclick="handleAnswerCard('${c.id}', 'reject', '${c.pin.value}')" class="px-3.5 py-1.5 rounded-full bg-white border border-slate-200 text-slate-600 text-xs font-medium">Reject</button>
-          </div>
-        </div>
-      `).join('');
-
-      document.getElementById('runs-list').innerHTML = runs.map(r => `
-        <div class="p-4 rounded-2xl bg-slate-50/70 border border-slate-100">
-          <div class="flex items-center justify-between mb-2">
-            <span class="text-xs font-semibold text-slate-800">${esc(r.id)} · @${esc(r.ownerAgent)}</span>
-            <span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600">${esc(r.status)}</span>
-          </div>
-          <div class="space-y-1.5">
-            ${(r.steps || []).map(s => `
-              <div class="flex items-center justify-between text-xs text-slate-600 bg-white px-3 py-2 rounded-xl border border-slate-100">
-                <span>${s.idx}. ${esc(s.title)}</span>
-                <span class="text-[10px] ${s.status === 'done' ? 'text-emerald-600 font-semibold' : 'text-slate-400'}">${esc(s.status)}</span>
-              </div>
-            `).join('') || `<div class="text-xs text-slate-400">Waiting for plan...</div>`}
-          </div>
-        </div>
-      `).join('') || `<div class="text-center text-xs text-slate-400 py-10">No active runs.</div>`;
-    }
-
-    loadSnapshot();
-    connectSSE();
-    renderPromptPreview();
-  </script>
 </body>
 </html>

@@ -1,6 +1,7 @@
 import { getRequestListener } from '@hono/node-server';
 import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
+import crypto from 'node:crypto';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -15,7 +16,7 @@ import {
   searchDriveFiles,
 } from './agents/tools.js';
 import type { MultiAgentBridge } from './agents/bridge.js';
-import { AuthService, recordToPrincipal } from './auth.js';
+import { AuthService, assertLead, hashToken, recordToPrincipal } from './auth.js';
 import { RippleEngine } from './engine.js';
 import { Errors, RippleError } from './errors.js';
 import { handleMcpHttpRequest } from './mcp.js';
@@ -31,45 +32,158 @@ const dir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(dir, '..');
 const publicUrlFilePath = path.resolve(repoRoot, '.ripple-data/public_url.txt');
 
-export function resolvePublicUrl(c: Context, fallback = 'http://localhost:8787'): string {
-  // 1. Check forwarded headers first (Cloudflare tunnel / reverse proxy / specific request host)
-  const forwardedProto = c.req.header('x-forwarded-proto');
-  const forwardedHost = c.req.header('x-forwarded-host') ?? c.req.header('host');
-  if (forwardedHost && (forwardedProto || forwardedHost.includes('trycloudflare.com') || (!forwardedHost.includes('localhost') && !forwardedHost.includes('127.0.0.1')))) {
-    const proto = forwardedProto ?? (forwardedHost.includes('trycloudflare.com') ? 'https' : 'http');
-    return `${proto}://${forwardedHost}`.replace(/\/$/, '');
+const CSP_HEADER =
+  "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+const VALID_WS_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+const VALID_HOST_RE = /^[a-zA-Z0-9.-]+(:\d{1,5})?$/;
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_SESSIONS = 5000;
+
+function normalizeHttpUrl(raw?: string | null): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  try {
+    const parsed = new URL(raw.trim());
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return null;
+  }
+}
+
+function isLocalUrl(urlStr: string): boolean {
+  try {
+    const host = new URL(urlStr).hostname.toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  } catch {
+    return true;
+  }
+}
+
+function isHttpsRequest(forwardedProto?: string | null, rawUrl?: string | null): boolean {
+  if (process.env.RIPPLE_FORCE_SECURE_COOKIE === '1') return true;
+  if (forwardedProto?.split(',')[0]?.trim().toLowerCase() === 'https') return true;
+  if (rawUrl && rawUrl.startsWith('https://')) return true;
+  return false;
+}
+
+function parseCookie(cookieHeader: string | undefined | null, name: string): string | null {
+  if (!cookieHeader) return null;
+  const parts = cookieHeader.split(';');
+  for (const part of parts) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const k = part.slice(0, idx).trim();
+    if (k === name) {
+      return part.slice(idx + 1).trim() || null;
+    }
+  }
+  return null;
+}
+
+function getAllowedOriginsFromEnv(): string[] {
+  return (process.env.RIPPLE_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function isAllowedOrigin(
+  origin: string | undefined | null,
+  requestHost: string | undefined | null,
+  configuredPublicUrl?: string,
+  extraAllowedOrigins: string[] = [],
+): boolean {
+  if (!origin) return false;
+  if (extraAllowedOrigins.includes(origin)) return true;
+
+  let parsedOrigin: URL;
+  try {
+    parsedOrigin = new URL(origin);
+    if (parsedOrigin.protocol !== 'http:' && parsedOrigin.protocol !== 'https:') return false;
+  } catch {
+    return false;
   }
 
-  // 2. Check live tunnel URL file if present
+  const normalizedPublic = normalizeHttpUrl(configuredPublicUrl);
+  if (normalizedPublic && parsedOrigin.origin === normalizedPublic) {
+    return true;
+  }
+
+  const envPublic = normalizeHttpUrl(process.env.PUBLIC_URL);
+  if (envPublic && parsedOrigin.origin === envPublic) {
+    return true;
+  }
+
+  if (requestHost && VALID_HOST_RE.test(requestHost)) {
+    // Exact host match (including port)
+    if (parsedOrigin.host.toLowerCase() === requestHost.toLowerCase()) {
+      return true;
+    }
+    // Allow matching localhost / 127.0.0.1 ONLY on the server's exact listening port
+    const portMatch = requestHost.match(/:(\d{1,5})$/);
+    if (portMatch) {
+      const requestPort = portMatch[1];
+      if (
+        parsedOrigin.protocol === 'http:' &&
+        (parsedOrigin.origin === `http://localhost:${requestPort}` ||
+          parsedOrigin.origin === `http://127.0.0.1:${requestPort}`)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+export function resolvePublicUrl(c: Context, fallback = 'http://localhost:8787'): string {
+  // 1. Validated PUBLIC_URL env var (if non-localhost)
+  const envUrl = normalizeHttpUrl(process.env.PUBLIC_URL);
+  if (envUrl && !isLocalUrl(envUrl)) {
+    return envUrl;
+  }
+
+  // 2. Validated explicit non-localhost fallback (e.g. explicitly configured server publicUrl)
+  const fallbackUrl = normalizeHttpUrl(fallback);
+  if (fallbackUrl && !isLocalUrl(fallbackUrl)) {
+    return fallbackUrl;
+  }
+
+  // 3. Validated .ripple-data/public_url.txt (live tunnel URL)
   try {
     if (fsSync.existsSync(publicUrlFilePath)) {
-      const fromFile = fsSync.readFileSync(publicUrlFilePath, 'utf8').trim();
-      if (fromFile.startsWith('http://') || fromFile.startsWith('https://')) {
-        return fromFile.replace(/\/$/, '');
+      const fromFile = normalizeHttpUrl(fsSync.readFileSync(publicUrlFilePath, 'utf8'));
+      if (fromFile) {
+        return fromFile;
       }
     }
   } catch {
     // ignore read error
   }
 
-  // 3. Check explicit PUBLIC_URL env var if not localhost
-  if (
-    process.env.PUBLIC_URL &&
-    !process.env.PUBLIC_URL.includes('localhost') &&
-    !process.env.PUBLIC_URL.includes('127.0.0.1')
-  ) {
-    return process.env.PUBLIC_URL.replace(/\/$/, '');
+  // 4. Reverse proxy headers ONLY when explicitly trusted (RIPPLE_TRUST_PROXY=1 or host in RIPPLE_ALLOWED_HOSTS)
+  const forwardedHost = c.req.header('x-forwarded-host')?.split(',')[0]?.trim();
+  const forwardedProto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim().toLowerCase();
+  const allowedHosts = (process.env.RIPPLE_ALLOWED_HOSTS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const trustProxy =
+    process.env.RIPPLE_TRUST_PROXY === '1' ||
+    Boolean(forwardedHost && allowedHosts.includes(forwardedHost.toLowerCase()));
+
+  if (trustProxy && forwardedHost && VALID_HOST_RE.test(forwardedHost)) {
+    const proto = forwardedProto === 'https' || forwardedProto === 'http' ? forwardedProto : 'https';
+    const candidate = normalizeHttpUrl(`${proto}://${forwardedHost}`);
+    if (candidate) return candidate;
   }
 
-  if (forwardedHost && !fallback.includes('trycloudflare.com')) {
-    return `http://${forwardedHost}`.replace(/\/$/, '');
-  }
-
-  return fallback.replace(/\/$/, '');
+  // 5. Validated fallback
+  return fallbackUrl ?? 'http://localhost:8787';
 }
 
 function buildOnboardingBundle(base: string, wsId: string, actorId: string, actorName: string, rawToken: string) {
-  const doorwayUrl = `${base}/w/${wsId}/agent.md?token=${encodeURIComponent(rawToken)}`;
+  const doorwayUrl = `${base}/w/${wsId}/agent.md`;
   return {
     publicUrl: base,
     mcpJson: {
@@ -84,7 +198,7 @@ function buildOnboardingBundle(base: string, wsId: string, actorId: string, acto
     },
     cliCommand: `RIPPLE_URL="${base}" RIPPLE_TOKEN="${rawToken}" npx tsx src/cli.ts context`,
     doorwayUrl,
-    doorwayPrompt: `You are invited to Project Ripple as ${actorName} (@${actorId}). Read ${doorwayUrl} to connect via MCP (${base}/mcp) or REST (${base}/api/v1) with Bearer token ${rawToken}.`,
+    doorwayPrompt: `You are invited to Project Ripple as ${actorName} (@${actorId}). Read ${doorwayUrl} to connect via MCP (${base}/mcp) or REST (${base}/api/v1) with Authorization: Bearer ${rawToken}.`,
     bootstrapCurl: `curl -fsSL -H "Authorization: Bearer ${rawToken}" "${base}/bootstrap"`,
   };
 }
@@ -92,14 +206,14 @@ function buildOnboardingBundle(base: string, wsId: string, actorId: string, acto
 function renderDoorwayMarkdown(opts: {
   base: string;
   wsId: string;
-  token?: string;
   whoami?: Principal | null;
   participants: Principal[];
 }): string {
-  const tok = opts.token || '<YOUR_RIPPLE_TOKEN>';
+  // Never reflect bearer tokens in markdown output (M3)
+  const tok = '<YOUR_RIPPLE_TOKEN>';
   const actorLine = opts.whoami
     ? `Authenticated as **${opts.whoami.actorName}** (\`@${opts.whoami.actorId}\`, kind: \`${opts.whoami.kind}\`).`
-    : `Pass \`?token=rpl_...\` or \`Authorization: Bearer rpl_...\` to authenticate.`;
+    : `Pass \`Authorization: Bearer rpl_...\` header to authenticate.`;
 
   return `# Ripple Workspace Doorway Guide (\`${opts.wsId}\`)
 
@@ -169,27 +283,86 @@ export function createRippleApp(
 ) {
   const app = new Hono<Env>();
 
-  const allowedOrigins = (process.env.RIPPLE_ALLOWED_ORIGINS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const allowedOrigins = getAllowedOriginsFromEnv();
+
+  // Bounded session store for HttpOnly cookie authentication (H2)
+  const sessions = new Map<
+    string,
+    { tokenHash: string; wsId: string; actorId: string; expiresAt: number }
+  >();
+
+  // Track active SSE streams by `${wsId}:${actorId}` so revocation closes them immediately (H6)
+  const activeSseClosers = new Map<string, Set<() => void>>();
+
+  auth.onActorRevoked((wsId, actorId) => {
+    const key = `${wsId}:${actorId}`;
+    const closers = activeSseClosers.get(key);
+    if (closers) {
+      for (const close of [...closers]) {
+        try {
+          close();
+        } catch {
+          // ignore close errors
+        }
+      }
+      activeSseClosers.delete(key);
+    }
+    for (const [sid, session] of sessions.entries()) {
+      if (session.wsId === wsId && session.actorId === actorId) {
+        sessions.delete(sid);
+      }
+    }
+  });
+
+  function pruneSessions(): void {
+    const now = Date.now();
+    for (const [sid, s] of sessions.entries()) {
+      if (s.expiresAt <= now) sessions.delete(sid);
+    }
+    while (sessions.size >= MAX_SESSIONS) {
+      const oldest = sessions.keys().next().value;
+      if (oldest === undefined) break;
+      sessions.delete(oldest);
+    }
+  }
+
+  async function authenticateFromCookie(c: Context): Promise<Principal | null> {
+    const sid = parseCookie(c.req.header('cookie'), 'ripple_session');
+    if (!sid) return null;
+    const session = sessions.get(sid);
+    if (!session) return null;
+    if (session.expiresAt <= Date.now()) {
+      sessions.delete(sid);
+      return null;
+    }
+    try {
+      return await auth.authenticateByHash(session.tokenHash);
+    } catch {
+      sessions.delete(sid);
+      return null;
+    }
+  }
 
   app.use('*', async (c, next) => {
     await next();
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('X-Frame-Options', 'DENY');
     c.header('Referrer-Policy', 'no-referrer');
+    c.header('Content-Security-Policy', CSP_HEADER);
+    if (isHttpsRequest(c.req.header('x-forwarded-proto'), c.req.url)) {
+      c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
   });
 
   app.use(
     '*',
     cors({
-      origin: (origin) => {
+      origin: (origin, c) => {
         if (!origin) return '';
-        if (allowedOrigins.includes(origin)) return origin;
-        if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) return origin;
-        return '';
+        const allowed = isAllowedOrigin(origin, c.req.header('host'), publicUrl, allowedOrigins);
+        return allowed ? origin : '';
       },
+      credentials: true,
     }),
   );
 
@@ -198,7 +371,7 @@ export function createRippleApp(
       return c.json(err.toJSON(), err.status as any);
     }
     console.error('[ripple] unhandled error:', err);
-    return c.json({ error: 'internal_error', message: err.message }, 500);
+    return c.json({ error: 'internal_error', message: 'Internal server error' }, 500);
   });
 
   // Health check
@@ -212,14 +385,19 @@ export function createRippleApp(
 
   // Doorway URL for any agent harness (unauthenticated overview or authenticated whoami)
   app.get('/bootstrap', async (c) => {
+    if (c.req.query('token') !== undefined) {
+      throw Errors.unauthorized('Query string tokens are disabled; use Authorization: Bearer header or session cookie');
+    }
     let whoami: Principal | null = null;
-    const rawHeader =
-      c.req.header('Authorization') ??
-      (c.req.query('token') ? `Bearer ${c.req.query('token')}` : null);
-    try {
-      whoami = await auth.authenticate(rawHeader);
-    } catch {
-      whoami = null;
+    const rawHeader = c.req.header('Authorization');
+    if (rawHeader) {
+      try {
+        whoami = await auth.authenticate(rawHeader);
+      } catch {
+        whoami = null;
+      }
+    } else {
+      whoami = await authenticateFromCookie(c);
     }
     const base = resolvePublicUrl(c, publicUrl);
     const wsId = whoami?.wsId ?? 'ws_default';
@@ -227,6 +405,7 @@ export function createRippleApp(
       ? (await engine.store.listTokens(wsId)).map(recordToPrincipal)
       : [];
 
+    c.header('Cache-Control', 'no-store');
     return c.json({
       service: 'ripple',
       principle: 'Runs with Gates — state parity, not surface parity',
@@ -252,17 +431,18 @@ export function createRippleApp(
     });
   });
 
-  // Markdown Doorway Guide (/w/:wsId/agent.md and /agent.md)
+  // Markdown Doorway Guide (/w/:wsId/agent.md and /agent.md) — never authenticates via ?token= or reflects tokens (M3)
   const handleAgentMd = async (c: Context) => {
-    const wsId = c.req.param('wsId') || 'ws_default';
-    const queryToken = c.req.query('token');
-    const rawHeader =
-      c.req.header('Authorization') ?? (queryToken ? `Bearer ${queryToken}` : null);
+    const rawWsId = c.req.param('wsId') || 'ws_default';
+    const safeWsId = VALID_WS_ID_RE.test(rawWsId) ? rawWsId : 'ws_default';
+    const rawHeader = c.req.header('Authorization');
     let whoami: Principal | null = null;
-    try {
-      whoami = await auth.authenticate(rawHeader);
-    } catch {
-      whoami = null;
+    if (rawHeader) {
+      try {
+        whoami = await auth.authenticate(rawHeader);
+      } catch {
+        whoami = null;
+      }
     }
     const base = resolvePublicUrl(c, publicUrl);
     const participants = whoami
@@ -270,65 +450,185 @@ export function createRippleApp(
       : [];
     const md = renderDoorwayMarkdown({
       base,
-      wsId: whoami?.wsId ?? wsId,
-      token: queryToken,
+      wsId: whoami?.wsId ?? safeWsId,
       whoami,
       participants,
     });
-    return c.text(md, 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+    return c.text(md, 200, {
+      'Content-Type': 'text/markdown; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
   };
   app.get('/w/:wsId/agent.md', handleAgentMd);
   app.get('/agent.md', handleAgentMd);
 
   // /api/v1/demo-actors removed for security (tokens must never be exposed unauthenticated)
 
-  // Serve Web UI
-  const possibleHtmlPaths = [
-    path.resolve(dir, '../public/index.html'),
-    path.resolve(dir, '../../public/index.html'),
-    path.resolve(process.cwd(), 'public/index.html'),
-  ];
-  let cachedHtml: string | null = null;
-  app.get('/', async (c) => {
-    if (!cachedHtml) {
-      for (const p of possibleHtmlPaths) {
-        try {
-          cachedHtml = await fs.readFile(p, 'utf8');
-          break;
-        } catch {
-          // try next
-        }
+  // Serve Web UI & strictly allowlisted local static assets from public/ (H1)
+  const assetCache = new Map<string, string>();
+  async function readPublicAsset(filename: 'index.html' | 'app.js' | 'styles.css'): Promise<string | null> {
+    const cached = assetCache.get(filename);
+    if (cached !== undefined) return cached;
+    const candidates = [
+      path.resolve(dir, '../public', filename),
+      path.resolve(dir, '../../public', filename),
+      path.resolve(process.cwd(), 'public', filename),
+    ];
+    for (const p of candidates) {
+      try {
+        const content = await fs.readFile(p, 'utf8');
+        assetCache.set(filename, content);
+        return content;
+      } catch {
+        // try next
       }
     }
-    if (!cachedHtml) {
-      return c.text('Ripple Web UI index.html not found', 500);
-    }
-    return c.html(cachedHtml);
+    return null;
+  }
+
+  app.get('/', async (c) => {
+    const html = await readPublicAsset('index.html');
+    if (!html) return c.text('Ripple Web UI index.html not found', 500);
+    return c.html(html);
+  });
+
+  app.get('/app.js', async (c) => {
+    const js = await readPublicAsset('app.js');
+    if (!js) return c.text('Not found', 404);
+    return c.text(js, 200, {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'X-Content-Type-Options': 'nosniff',
+    });
+  });
+
+  app.get('/styles.css', async (c) => {
+    const css = await readPublicAsset('styles.css');
+    if (!css) return c.text('Not found', 404);
+    return c.text(css, 200, {
+      'Content-Type': 'text/css; charset=utf-8',
+      'X-Content-Type-Options': 'nosniff',
+    });
   });
 
   // Auth middleware for /api/v1/*
   const api = new Hono<Env>();
+
+  // Per-IP rate limiter for session login (15 attempts / 60s)
+  const loginAttempts = new Map<string, number[]>();
+  const LOGIN_WINDOW_MS = 60_000;
+  const LOGIN_MAX_ATTEMPTS = 15;
+
+  // Session cookie login / logout endpoints (H2)
+  api.post('/auth/session', async (c) => {
+    const ip =
+      c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
+      c.req.header('x-real-ip') ||
+      'local';
+    const now = Date.now();
+    const recent = (loginAttempts.get(ip) ?? []).filter((ts) => now - ts < LOGIN_WINDOW_MS);
+    if (recent.length >= LOGIN_MAX_ATTEMPTS) {
+      return c.json({ error: 'rate_limited', message: 'Too many login attempts; try again later' }, 429);
+    }
+    recent.push(now);
+    loginAttempts.set(ip, recent);
+    if (loginAttempts.size > 1000) {
+      for (const [k, v] of loginAttempts) {
+        if (v.every((ts) => now - ts >= LOGIN_WINDOW_MS)) loginAttempts.delete(k);
+      }
+    }
+
+    const body = await c.req.json().catch(() => null);
+    const rawToken = typeof body?.token === 'string' ? body.token.trim() : '';
+    if (!rawToken) throw Errors.badRequest('token is required');
+    const principal = await auth.authenticate(`Bearer ${rawToken}`);
+
+    pruneSessions();
+    const sessionId = crypto.randomBytes(32).toString('base64url');
+    sessions.set(sessionId, {
+      tokenHash: hashToken(rawToken),
+      wsId: principal.wsId,
+      actorId: principal.actorId,
+      expiresAt: Date.now() + SESSION_TTL_MS,
+    });
+
+    const secureAttr = isHttpsRequest(c.req.header('x-forwarded-proto'), c.req.url) ? '; Secure' : '';
+    c.header(
+      'Set-Cookie',
+      `ripple_session=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${secureAttr}`,
+    );
+    return c.json({ ok: true, principal }, 200);
+  });
+
+  const handleLogout = (c: Context<Env>) => {
+    const sid = parseCookie(c.req.header('cookie'), 'ripple_session');
+    if (sid) sessions.delete(sid);
+    const secureAttr = isHttpsRequest(c.req.header('x-forwarded-proto'), c.req.url) ? '; Secure' : '';
+    c.header(
+      'Set-Cookie',
+      `ripple_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secureAttr}`,
+    );
+    return c.json({ ok: true }, 200);
+  };
+  api.post('/auth/logout', handleLogout);
+  api.delete('/auth/session', handleLogout);
+
   api.use('*', async (c, next) => {
-    // Allow token via query param for EventSource (SSE) or phone links
-    const header =
-      c.req.header('Authorization') ??
-      (c.req.query('token') ? `Bearer ${c.req.query('token')}` : null);
-    const principal = await auth.authenticate(header);
-    c.set('principal', principal);
+    // Reject ?token= query parameters everywhere on /api/v1/* (H2)
+    if (c.req.query('token') !== undefined) {
+      throw Errors.unauthorized(
+        'Query string tokens are disabled; use Authorization: Bearer header or session cookie',
+      );
+    }
+
+    const authHeader = c.req.header('Authorization');
+    if (authHeader) {
+      const principal = await auth.authenticate(authHeader);
+      c.set('principal', principal);
+      await next();
+      return;
+    }
+
+    const cookiePrincipal = await authenticateFromCookie(c);
+    if (!cookiePrincipal) {
+      throw Errors.unauthorized();
+    }
+
+    // CSRF defense-in-depth for cookie-authenticated mutating requests
+    const method = c.req.method.toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+      const secFetchSite = c.req.header('sec-fetch-site')?.toLowerCase();
+      if (secFetchSite === 'cross-site') {
+        throw Errors.forbidden('Cross-site cookie mutation rejected');
+      }
+      const origin = c.req.header('origin');
+      if (origin && !isAllowedOrigin(origin, c.req.header('host'), publicUrl, allowedOrigins)) {
+        throw Errors.forbidden('Cross-origin cookie mutation rejected');
+      }
+    }
+
+    c.set('principal', cookiePrincipal);
     await next();
   });
 
   // Idempotency helper for write endpoints
   async function withIdempotency<T>(
-    key: string | undefined,
-    wsId: string,
+    c: Context<Env>,
+    p: Principal,
     fn: () => Promise<T>,
   ): Promise<T> {
+    const key = c.req.header('Idempotency-Key');
     if (!key) return fn();
-    const cached = await engine.store.getIdempotency(key);
+    const scope = {
+      wsId: p.wsId,
+      actorId: p.actorId,
+      method: c.req.method,
+      path: c.req.path,
+      key,
+    };
+    const cached = await engine.store.getIdempotency(scope);
     if (cached !== undefined) return cached as T;
     const res = await fn();
-    await engine.store.saveIdempotency(key, wsId, res);
+    await engine.store.saveIdempotency(scope, res);
     return res;
   }
 
@@ -426,10 +726,62 @@ export function createRippleApp(
     });
   });
 
+  const consumedApprovalCards = new Set<string>();
+
+  // Helper: gate host-credentialed external integrations behind lead role or capability (+ human lead approval for writes) (C3)
+  async function assertIntegrationAccess(
+    p: Principal,
+    opts: { capability: string; isWrite: boolean; approvalCardId?: string },
+  ): Promise<void> {
+    const isLead = p.kind === 'human' && p.roles.includes('lead');
+    if (!opts.isWrite) {
+      if (isLead || Boolean(p.capabilities?.includes(opts.capability))) {
+        return;
+      }
+      throw Errors.forbidden(
+        `Principal '${p.actorId}' lacks '${opts.capability}' capability or lead role for read integration`,
+      );
+    }
+    if (isLead) return;
+    if (!p.capabilities?.includes(opts.capability)) {
+      throw Errors.forbidden(
+        `Principal '${p.actorId}' lacks '${opts.capability}' capability for write integration`,
+      );
+    }
+    const cardId = typeof opts.approvalCardId === 'string' ? opts.approvalCardId.trim() : '';
+    if (!cardId) {
+      throw Errors.forbidden(
+        `Write integration '${opts.capability}' requires human lead approvalCardId`,
+      );
+    }
+    const card = await engine.store.getCard(cardId);
+    if (
+      !card ||
+      card.wsId !== p.wsId ||
+      card.status !== 'answered' ||
+      card.answerOption !== 'approve' ||
+      !card.answeredBy
+    ) {
+      throw Errors.forbidden(
+        `Approval card '${cardId}' is not an approved decision card in workspace '${p.wsId}'`,
+      );
+    }
+    const approver = await engine.store.getTokenByActor(p.wsId, card.answeredBy);
+    if (!approver || approver.kind !== 'human' || !approver.roles.includes('lead')) {
+      throw Errors.forbidden(
+        `Approval card '${cardId}' must be approved by a human workspace lead`,
+      );
+    }
+    if (consumedApprovalCards.has(cardId)) {
+      throw Errors.forbidden(`Approval card '${cardId}' has already been consumed`);
+    }
+    consumedApprovalCards.add(cardId);
+  }
+
   // Self-service agent invitation & token minting
   const handleInviteOrMint = async (c: Context<Env>) => {
     const p = c.get('principal');
-    if (p.kind !== 'human') throw Errors.forbidden('Only humans may invite or mint tokens');
+    assertLead(p, 'invite or mint tokens');
     const body = await c.req.json();
     const actorId = String(body.actorId ?? body.actor_id ?? '').trim();
     if (!actorId) throw Errors.badRequest('actorId is required');
@@ -452,42 +804,22 @@ export function createRippleApp(
     const actorName = body.actorName ?? body.actor_name ?? preset?.name ?? actorId;
     const kind = body.kind ?? 'agent';
 
-    // Check if actor already has an active token and rotateExisting is not explicitly requested
-    const existing = await engine.store.getTokenByActor(p.wsId, actorId);
-    let rawToken: string;
-    let principal: Principal;
-
-    if (existing && existing.rawToken && !body.rotate) {
-      rawToken = existing.rawToken;
-      const updated = await engine.store.updateTokenByActor(p.wsId, actorId, {
-        actorName,
-        bio: body.bio ?? existing.bio ?? preset?.bio,
-        avatarColor: body.avatarColor ?? existing.avatarColor ?? preset?.color,
-        capabilities: body.capabilities ?? existing.capabilities ?? preset?.caps,
-        lastSeenAt: new Date().toISOString(),
-        statusText: 'Invited & Connected via Bridge',
-        online: true,
-      });
-      principal = recordToPrincipal(updated ?? existing);
-    } else {
-      const minted = await auth.mintToken({
-        wsId: p.wsId,
-        actorId,
-        actorName,
-        kind,
-        sponsorHuman: kind === 'human' ? undefined : p.actorId,
-        parentAgentId: body.parentAgentId ?? body.parent_agent_id,
-        roles: body.roles,
-        bio: body.bio ?? preset?.bio,
-        avatarColor: body.avatarColor ?? preset?.color,
-        capabilities: body.capabilities ?? preset?.caps,
-        statusText: kind === 'agent' ? 'Invited & Connected via Bridge' : 'Collaborator',
-        rawToken: body.rawToken,
-        rotateExisting: Boolean(body.rotate),
-      });
-      rawToken = minted.rawToken;
-      principal = minted.principal;
-    }
+    const minted = await auth.mintToken({
+      wsId: p.wsId,
+      actorId,
+      actorName,
+      kind,
+      sponsorHuman: kind === 'human' ? undefined : p.actorId,
+      parentAgentId: body.parentAgentId ?? body.parent_agent_id,
+      roles: body.roles,
+      bio: body.bio ?? preset?.bio,
+      avatarColor: body.avatarColor ?? preset?.color,
+      capabilities: body.capabilities ?? preset?.caps,
+      statusText: kind === 'agent' ? 'Invited & Connected via Bridge' : 'Collaborator',
+      rotateExisting: Boolean(body.rotate),
+    });
+    const rawToken = minted.rawToken;
+    const principal = minted.principal;
 
     const base = resolvePublicUrl(c, publicUrl);
     const onboarding = buildOnboardingBundle(base, p.wsId, principal.actorId, principal.actorName, rawToken);
@@ -508,7 +840,7 @@ export function createRippleApp(
 
   api.delete('/tokens/:actorId', async (c) => {
     const p = c.get('principal');
-    if (p.kind !== 'human') throw Errors.forbidden('Only humans may revoke tokens');
+    assertLead(p, 'revoke tokens');
     const targetActor = c.req.param('actorId');
     await auth.revokeActor(p.wsId, targetActor);
     return c.json({ ok: true, revokedActorId: targetActor });
@@ -519,7 +851,7 @@ export function createRippleApp(
   api.post('/items', async (c) => {
     const p = c.get('principal');
     const body = await c.req.json();
-    const item = await withIdempotency(c.req.header('Idempotency-Key'), p.wsId, () =>
+    const item = await withIdempotency(c, p, () =>
       engine.createItem(p, {
         title: body.title,
         body: body.body,
@@ -527,7 +859,6 @@ export function createRippleApp(
         assigneeId: body.assigneeId ?? body.assignee_id,
         parentItemId: body.parentItemId ?? body.parent_item_id,
         tags: body.tags,
-        createdBy: body.createdBy ?? body.created_by,
       }),
     );
     return c.json(item, 201);
@@ -552,7 +883,7 @@ export function createRippleApp(
 
   api.post('/items/:id/claim', async (c) => {
     const p = c.get('principal');
-    const run = await withIdempotency(c.req.header('Idempotency-Key'), p.wsId, () =>
+    const run = await withIdempotency(c, p, () =>
       engine.claim(p, c.req.param('id')),
     );
     return c.json(run, 201);
@@ -610,7 +941,16 @@ export function createRippleApp(
     if (body.executeTool && bridge) {
       const parentRun = await engine.store.getRun(parentRunId);
       if (!parentRun || parentRun.wsId !== p.wsId) throw Errors.notFound('Run', parentRunId);
+      if (p.kind !== 'human' && p.actorId !== parentRun.ownerAgent) {
+        throw Errors.forbidden('Only humans or the parent run owner may execute bridge sub-agent tools');
+      }
+      const approvalCardId = body.approvalCardId ?? body.approval_card_id;
       if (body.executeTool === 'github_pr') {
+        await assertIntegrationAccess(p, {
+          capability: 'github',
+          isWrite: true,
+          approvalCardId,
+        });
         const res = await bridge.executeGitHubPrSubagent(p, parentRun, {
           title: body.title || 'Sub-Agent GitHub PR',
           userPrompt: body.goal || body.title || 'Triggered from Web UI',
@@ -619,6 +959,11 @@ export function createRippleApp(
         return c.json({ run: res.subRun, steps, prResult: res.prResult }, 201);
       }
       if (body.executeTool === 'drive_doc') {
+        await assertIntegrationAccess(p, {
+          capability: 'gdocs',
+          isWrite: true,
+          approvalCardId,
+        });
         const res = await bridge.executeDriveSubagent(p, parentRun, {
           title: body.title || 'Sub-Agent Google Doc Spec',
           userPrompt: body.goal || body.title || 'Triggered from Web UI',
@@ -626,9 +971,11 @@ export function createRippleApp(
         const steps = await engine.store.listSteps(res.subRun.id);
         return c.json({ run: res.subRun, steps, gdocResult: res.gdocResult }, 201);
       }
+      throw Errors.badRequest(`Unsupported executeTool: ${String(body.executeTool)}`);
     }
 
     const spawned = await engine.spawnSubrun(p, parentRunId, {
+      epoch: body.epoch,
       title: body.title,
       goal: body.goal,
       subagentId: body.subagentId ?? body.subagent_id,
@@ -845,9 +1192,15 @@ export function createRippleApp(
     const p = c.get('principal');
     const body = await c.req.json();
     if (body.action === 'status' || body.action === 'inspect') {
+      await assertIntegrationAccess(p, { capability: 'github', isWrite: false });
       const status = await inspectGitHubRepo(body.repo);
       return c.json(status);
     }
+    await assertIntegrationAccess(p, {
+      capability: 'github',
+      isWrite: true,
+      approvalCardId: body.approvalCardId ?? body.approval_card_id,
+    });
     const pr = await createGitHubPullRequest({
       repo: body.repo,
       title: body.title ?? 'Ripple Sub-Agent Automated PR',
@@ -880,19 +1233,27 @@ export function createRippleApp(
     const action = body.action ?? (body.title ? 'create_doc' : 'list');
 
     if (action === 'list') {
+      await assertIntegrationAccess(p, { capability: 'gdrive', isWrite: false });
       const files = await listRecentDriveFiles(body.limit ?? 10);
       return c.json({ files });
     }
     if (action === 'search') {
+      await assertIntegrationAccess(p, { capability: 'gdrive', isWrite: false });
       const files = await searchDriveFiles(body.query ?? '', body.limit ?? 10);
       return c.json({ files });
     }
     if (action === 'read') {
+      await assertIntegrationAccess(p, { capability: 'gdocs', isWrite: false });
       if (!body.docId) throw Errors.badRequest('docId is required for read action');
       const doc = await readGoogleDoc(body.docId);
       return c.json(doc);
     }
 
+    await assertIntegrationAccess(p, {
+      capability: 'gdocs',
+      isWrite: true,
+      approvalCardId: body.approvalCardId ?? body.approval_card_id,
+    });
     const doc = await createGoogleDoc({
       title: body.title ?? 'Ripple Sub-Agent Google Doc',
       heading: body.heading,
@@ -916,7 +1277,7 @@ export function createRippleApp(
     return c.json(doc, 201);
   });
 
-  // SSE stream with Last-Event-ID gapless replay
+  // SSE stream with Last-Event-ID gapless replay & instant teardown on token revocation
   api.get('/events', async (c) => {
     const p = c.get('principal');
     const afterParam = c.req.query('after');
@@ -924,11 +1285,18 @@ export function createRippleApp(
     const skipReplay = afterParam === 'latest' && !lastIdHeader;
     const lastId = skipReplay ? 0 : Number(lastIdHeader ?? afterParam ?? 0);
     const encoder = new TextEncoder();
+    const sseKey = `${p.wsId}:${p.actorId}`;
 
     const stream = new ReadableStream({
       async start(controller) {
+        let closed = false;
         const send = (ev: { seq: number; type: string }) => {
-          controller.enqueue(encoder.encode(`id: ${ev.seq}\nevent: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`));
+          if (closed) return;
+          try {
+            controller.enqueue(encoder.encode(`id: ${ev.seq}\nevent: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`));
+          } catch {
+            closeStream();
+          }
         };
         if (!skipReplay) {
           const missed = await engine.store.listEvents(p.wsId, lastId, 100);
@@ -939,29 +1307,46 @@ export function createRippleApp(
 
         const unsub = engine.store.subscribe(p.wsId, (ev) => send(ev));
         const ping = setInterval(() => {
+          if (closed) return;
           try {
             controller.enqueue(encoder.encode(': ping\n\n'));
           } catch {
-            clearInterval(ping);
+            closeStream();
           }
         }, 15_000);
 
-        c.req.raw.signal.addEventListener('abort', () => {
+        const closeStream = () => {
+          if (closed) return;
+          closed = true;
           clearInterval(ping);
           unsub();
+          const set = activeSseClosers.get(sseKey);
+          if (set) {
+            set.delete(closeStream);
+            if (set.size === 0) activeSseClosers.delete(sseKey);
+          }
           try {
             controller.close();
           } catch {
             // already closed
           }
-        });
+        };
+
+        let set = activeSseClosers.get(sseKey);
+        if (!set) {
+          set = new Set();
+          activeSseClosers.set(sseKey, set);
+        }
+        set.add(closeStream);
+
+        c.req.raw.signal.addEventListener('abort', closeStream);
       },
     });
 
     return new Response(stream, {
       headers: {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
+        'Cache-Control': 'no-cache, no-store, no-transform',
         'X-Accel-Buffering': 'no',
         Connection: 'keep-alive',
       },
@@ -984,11 +1369,16 @@ export function createRippleHttpServer(
   return http.createServer(async (req, res) => {
     const url = req.url ?? '/';
     if (url === '/mcp' || url.startsWith('/mcp?')) {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('X-Frame-Options', 'DENY');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      res.setHeader('Cache-Control', 'no-store');
       try {
         const parsedUrl = new URL(url, 'http://localhost');
-        const queryTok = parsedUrl.searchParams.get('token');
-        const authHeader =
-          req.headers.authorization ?? (queryTok ? `Bearer ${queryTok}` : undefined);
+        if (parsedUrl.searchParams.has('token')) {
+          throw Errors.unauthorized('Query string tokens are disabled on /mcp; use Authorization: Bearer header');
+        }
+        const authHeader = req.headers.authorization;
         const principal = await auth.authenticate(authHeader);
         await handleMcpHttpRequest(req, res, engine, principal);
       } catch (err) {

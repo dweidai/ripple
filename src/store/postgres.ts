@@ -14,7 +14,14 @@ import type {
   ThreadMessage,
   MessageReadReceipt,
 } from '../types.js';
-import type { EventListener, Store, TokenRecord } from './interface.js';
+import {
+  DEFAULT_IDEMPOTENCY_TTL_MS,
+  hashIdempotencyScope,
+  type EventListener,
+  type IdempotencyScope,
+  type Store,
+  type TokenRecord,
+} from './interface.js';
 
 const { Pool, Client } = pg;
 
@@ -22,9 +29,30 @@ export class PostgresStore implements Store {
   private pool: pg.Pool;
   private notifyClient?: pg.Client;
   private listeners = new Map<string, Set<EventListener>>();
+  private closed = false;
+  private reconnectTimer?: NodeJS.Timeout;
+  private reconnectAttempts = 0;
+  private readonly ssl?: { rejectUnauthorized: boolean };
 
   constructor(private readonly connectionString: string) {
-    this.pool = new Pool({ connectionString });
+    const isLocalDb = /@(?:localhost|127\.0\.0\.1)(?::|\/|$)/i.test(connectionString);
+    const useSsl =
+      process.env.RIPPLE_DB_SSL === '0'
+        ? false
+        : process.env.RIPPLE_DB_SSL === '1' ||
+          /sslmode=require/i.test(connectionString) ||
+          (process.env.NODE_ENV === 'production' && !isLocalDb);
+    this.ssl = useSsl
+      ? { rejectUnauthorized: process.env.RIPPLE_DB_SSL_REJECT_UNAUTHORIZED === '1' }
+      : undefined;
+    this.pool = new Pool({
+      connectionString,
+      max: 20,
+      connectionTimeoutMillis: 10_000,
+      idleTimeoutMillis: 30_000,
+      statement_timeout: 15_000,
+      ...(this.ssl ? { ssl: this.ssl } : {}),
+    });
   }
 
   async init(): Promise<void> {
@@ -32,11 +60,40 @@ export class PostgresStore implements Store {
     const migrationPath = path.resolve(dir, '../../db/migrations/001_init.sql');
     const sql = await fs.readFile(migrationPath, 'utf8');
     await this.pool.query(sql);
+    await this.pool.query('ALTER TABLE tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ');
+    await this.pool.query("ALTER TABLE thread_messages ADD COLUMN IF NOT EXISTS read_by JSONB NOT NULL DEFAULT '[]'");
+    await this.pool.query('ALTER TABLE idempotency_keys ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ');
 
-    this.notifyClient = new Client({ connectionString: this.connectionString });
-    await this.notifyClient.connect();
-    await this.notifyClient.query('LISTEN ripple_events');
-    this.notifyClient.on('notification', async (msg) => {
+    await this.connectNotifyClient();
+  }
+
+  private async connectNotifyClient(): Promise<void> {
+    if (this.closed) return;
+    const client = new Client({
+      connectionString: this.connectionString,
+      ...(this.ssl ? { ssl: this.ssl } : {}),
+    });
+    this.notifyClient = client;
+
+    client.on('error', (err) => {
+      console.error('[ripple] Postgres notifyClient error:', err?.message ?? err);
+      if (this.notifyClient === client) {
+        this.notifyClient = undefined;
+      }
+      this.scheduleNotifyReconnect();
+    });
+
+    client.on('end', () => {
+      if (this.notifyClient === client) {
+        this.notifyClient = undefined;
+      }
+      if (!this.closed) {
+        console.warn('[ripple] Postgres notifyClient disconnected; scheduling reconnect');
+        this.scheduleNotifyReconnect();
+      }
+    });
+
+    client.on('notification', async (msg) => {
       if (!msg.payload) return;
       try {
         const { wsId, seq } = JSON.parse(msg.payload) as { wsId: string; seq: number };
@@ -51,10 +108,37 @@ export class PostgresStore implements Store {
         // ignore malformed notification
       }
     });
+
+    await client.connect();
+    await client.query('LISTEN ripple_events');
+    this.reconnectAttempts = 0;
+  }
+
+  private scheduleNotifyReconnect(): void {
+    if (this.closed || this.reconnectTimer) return;
+    const delayMs = Math.min(1000 * 2 ** this.reconnectAttempts, 30_000);
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (this.closed) return;
+      this.connectNotifyClient().catch((err) => {
+        console.error('[ripple] Postgres notifyClient reconnect failed:', err?.message ?? err);
+        this.scheduleNotifyReconnect();
+      });
+    }, delayMs);
   }
 
   async close(): Promise<void> {
-    if (this.notifyClient) await this.notifyClient.end();
+    this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    if (this.notifyClient) {
+      const client = this.notifyClient;
+      this.notifyClient = undefined;
+      await client.end().catch(() => {});
+    }
     await this.pool.end();
   }
 
@@ -67,9 +151,9 @@ export class PostgresStore implements Store {
 
   async saveToken(r: TokenRecord): Promise<void> {
     await this.pool.query(
-      `INSERT INTO tokens (token_hash, ws_id, actor_id, actor_name, kind, sponsor_human, parent_agent_id, roles, avatar_color, bio, capabilities, last_seen_at, status_text, online, raw_token)
+      `INSERT INTO tokens (token_hash, ws_id, actor_id, actor_name, kind, sponsor_human, parent_agent_id, roles, avatar_color, bio, capabilities, last_seen_at, status_text, online, expires_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-       ON CONFLICT (token_hash) DO UPDATE SET actor_name = EXCLUDED.actor_name, roles = EXCLUDED.roles, avatar_color = EXCLUDED.avatar_color, bio = EXCLUDED.bio, capabilities = EXCLUDED.capabilities, last_seen_at = EXCLUDED.last_seen_at, status_text = EXCLUDED.status_text, online = EXCLUDED.online`,
+       ON CONFLICT (token_hash) DO UPDATE SET actor_name = EXCLUDED.actor_name, roles = EXCLUDED.roles, avatar_color = EXCLUDED.avatar_color, bio = EXCLUDED.bio, capabilities = EXCLUDED.capabilities, last_seen_at = EXCLUDED.last_seen_at, status_text = EXCLUDED.status_text, online = EXCLUDED.online, expires_at = EXCLUDED.expires_at`,
       [
         r.tokenHash,
         r.wsId,
@@ -85,7 +169,7 @@ export class PostgresStore implements Store {
         r.lastSeenAt ?? new Date().toISOString(),
         r.statusText ?? null,
         r.online ?? true,
-        r.rawToken ?? null,
+        r.expiresAt ?? null,
       ],
     );
   }
@@ -518,8 +602,8 @@ export class PostgresStore implements Store {
 
   async createThreadMessage(m: ThreadMessage): Promise<ThreadMessage> {
     await this.pool.query(
-      `INSERT INTO thread_messages (id, ws_id, scope_kind, scope_id, actor_id, author, author_kind, body, mentions, reply_to_id, run_id, item_id, hop_count, steer_id, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      `INSERT INTO thread_messages (id, ws_id, scope_kind, scope_id, actor_id, author, author_kind, body, mentions, reply_to_id, run_id, item_id, hop_count, steer_id, read_by, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
       [
         m.id,
         m.wsId,
@@ -535,6 +619,7 @@ export class PostgresStore implements Store {
         m.itemId ?? null,
         m.hopCount ?? 0,
         m.steerId ?? null,
+        JSON.stringify(m.readBy ?? []),
         m.createdAt,
       ],
     );
@@ -549,8 +634,44 @@ export class PostgresStore implements Store {
     return rows.map(mapThread);
   }
 
-  async recordMessageRead(_wsId: string, _msgId: string, _receipt: MessageReadReceipt): Promise<ThreadMessage | undefined> {
-    return undefined;
+  async recordMessageRead(wsId: string, msgId: string, receipt: MessageReadReceipt): Promise<ThreadMessage | undefined> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        'SELECT * FROM thread_messages WHERE ws_id = $1 AND id = $2 FOR UPDATE',
+        [wsId, msgId],
+      );
+      if (!rows[0]) {
+        await client.query('ROLLBACK');
+        return undefined;
+      }
+      const msg = mapThread(rows[0]);
+      const readBy = [...(msg.readBy ?? [])];
+      const idx = readBy.findIndex((r) => r.actorId === receipt.actorId);
+      if (idx >= 0) {
+        const prev = readBy[idx];
+        readBy[idx] = {
+          ...prev,
+          ...receipt,
+          ack: receipt.ack ?? prev.ack,
+          emoji: receipt.emoji ?? prev.emoji,
+        };
+      } else {
+        readBy.push({ ...receipt });
+      }
+      await client.query(
+        'UPDATE thread_messages SET read_by = $3 WHERE ws_id = $1 AND id = $2',
+        [wsId, msgId, JSON.stringify(readBy)],
+      );
+      await client.query('COMMIT');
+      return { ...msg, readBy };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async appendEvent(ev: Omit<RippleEvent, 'seq'>): Promise<RippleEvent> {
@@ -584,15 +705,28 @@ export class PostgresStore implements Store {
     return () => set!.delete(listener);
   }
 
-  async getIdempotency(key: string): Promise<unknown | undefined> {
-    const { rows } = await this.pool.query('SELECT response FROM idempotency_keys WHERE key = $1', [key]);
+  async getIdempotency(scope: IdempotencyScope): Promise<unknown | undefined> {
+    const hash = hashIdempotencyScope(scope);
+    const { rows } = await this.pool.query(
+      'SELECT response FROM idempotency_keys WHERE key = $1 AND ws_id = $2 AND (expires_at IS NULL OR expires_at > NOW())',
+      [hash, scope.wsId],
+    );
     return rows[0]?.response;
   }
 
-  async saveIdempotency(key: string, wsId: string, response: unknown): Promise<void> {
+  async saveIdempotency(
+    scope: IdempotencyScope,
+    response: unknown,
+    ttlMs = DEFAULT_IDEMPOTENCY_TTL_MS,
+  ): Promise<void> {
+    const hash = hashIdempotencyScope(scope);
+    const expiresAt = new Date(Date.now() + ttlMs).toISOString();
     await this.pool.query(
-      `INSERT INTO idempotency_keys (key, ws_id, response) VALUES ($1,$2,$3) ON CONFLICT (key) DO NOTHING`,
-      [key, wsId, JSON.stringify(response)],
+      `INSERT INTO idempotency_keys (key, ws_id, response, expires_at)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (key) DO UPDATE SET response = EXCLUDED.response, expires_at = EXCLUDED.expires_at
+       WHERE idempotency_keys.expires_at IS NOT NULL AND idempotency_keys.expires_at <= NOW()`,
+      [hash, scope.wsId, JSON.stringify(response), expiresAt],
     );
   }
 }
@@ -601,7 +735,6 @@ export class PostgresStore implements Store {
 function mapToken(r: Record<string, any>): TokenRecord {
   return {
     tokenHash: r.token_hash,
-    rawToken: r.raw_token ?? undefined,
     wsId: r.ws_id,
     actorId: r.actor_id,
     actorName: r.actor_name,
@@ -615,6 +748,7 @@ function mapToken(r: Record<string, any>): TokenRecord {
     lastSeenAt: r.last_seen_at ? new Date(r.last_seen_at).toISOString() : undefined,
     statusText: r.status_text ?? undefined,
     online: r.online ?? true,
+    expiresAt: r.expires_at ? new Date(r.expires_at).toISOString() : undefined,
     revokedAt: r.revoked_at ? new Date(r.revoked_at).toISOString() : undefined,
   };
 }
@@ -765,6 +899,7 @@ function mapThread(r: Record<string, any>): ThreadMessage {
     itemId: r.item_id ?? undefined,
     hopCount: r.hop_count ?? 0,
     steerId: r.steer_id ?? undefined,
+    readBy: Array.isArray(r.read_by) ? r.read_by : [],
     createdAt: new Date(r.created_at).toISOString(),
   };
 }
