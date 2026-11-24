@@ -132,10 +132,11 @@ export async function exchangeGithubCode(params: {
   const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
       Accept: 'application/json',
+      'User-Agent': 'Ripple-Workspace',
     },
-    body: JSON.stringify({
+    body: new URLSearchParams({
       client_id: params.clientId,
       client_secret: params.clientSecret,
       code: params.code,
@@ -143,11 +144,15 @@ export async function exchangeGithubCode(params: {
     }),
   });
   if (!tokenRes.ok) {
-    throw new Error(`GitHub token exchange failed (${tokenRes.status})`);
+    throw new Error(`github_token_http_${tokenRes.status}`);
   }
-  const tokenData = (await tokenRes.json()) as { access_token?: string; error?: string };
+  const tokenData = (await tokenRes.json()) as {
+    access_token?: string;
+    error?: string;
+    error_description?: string;
+  };
   if (!tokenData.access_token) {
-    throw new Error(`GitHub token response missing access_token (${tokenData.error || 'unknown'})`);
+    throw new Error(`github_token_err:${tokenData.error || 'missing_access_token'}`);
   }
 
   const userRes = await fetch('https://api.github.com/user', {

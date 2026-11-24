@@ -770,9 +770,15 @@ export function createRippleApp(
         `ripple_session=${newSessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${secureAttr}`,
       );
       return c.redirect('/');
-    } catch (err) {
-      console.error('[ripple] GitHub OAuth callback error:', err);
-      return c.redirect('/?auth_error=github_link_failed');
+    } catch (err: any) {
+      const msg = String(err?.message || 'unknown');
+      console.error('[ripple] GitHub OAuth callback error:', msg, err);
+      const safeReason = msg.startsWith('github_token_')
+        ? msg.replace(/[^a-zA-Z0-9_:-]/g, '').slice(0, 64)
+        : err?.code
+          ? `pg_${String(err.code).replace(/[^a-zA-Z0-9_]/g, '')}`
+          : 'internal';
+      return c.redirect(`/?auth_error=github_link_failed&reason=${encodeURIComponent(safeReason)}`);
     }
   });
 

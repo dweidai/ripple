@@ -802,7 +802,9 @@ Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events" w
           github_link_failed: 'GitHub account linking failed. Please try again.',
           github_account_mismatch: 'This Google account is already bound to a different GitHub account.'
         };
-        banner.textContent = errLabels[authErr] || 'Authentication error. Please try again.';
+        const reason = params.get('reason');
+        const baseMsg = errLabels[authErr] || 'Authentication error. Please try again.';
+        banner.textContent = reason ? `${baseMsg} (${reason})` : baseMsg;
         banner.classList.remove('hidden');
       }
       window.history.replaceState({}, '', window.location.pathname);
