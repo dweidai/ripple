@@ -223,6 +223,18 @@
           <button type="button" class="preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition" data-action="select-preset" data-preset="custom">Custom</button>
         </div>
 
+        <div class="grid grid-cols-2 gap-2.5">
+          <div>
+            <label for="invite-actor-id" class="block text-[11px] font-medium text-slate-500 mb-1">Agent Handle (@id)</label>
+            <input id="invite-actor-id" type="text" placeholder="agy-2" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-200" />
+          </div>
+          <div>
+            <label for="invite-actor-name" class="block text-[11px] font-medium text-slate-500 mb-1">Display Name</label>
+            <input id="invite-actor-name" type="text" placeholder="Antigravity 2 (@agy-2)" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-200" />
+          </div>
+        </div>
+        <div id="invite-overwrite-warn" class="hidden rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-800"></div>
+
         <pre id="prompt-preview" class="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 text-[11px] leading-relaxed text-slate-700 overflow-x-auto max-h-60 whitespace-pre-wrap font-mono"></pre>
 
         <div class="text-[11px] text-slate-400 flex items-center justify-between">

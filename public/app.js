@@ -121,9 +121,43 @@
     toggleMobileSidebar(false);
   }
 
+  function getConnectedAgentIds() {
+    return new Set((snapshot?.agents || []).map(a => a.actorId));
+  }
+
+  function populatePresetFields(key) {
+    const meta = AGENTS_META[key];
+    if (!meta) return;
+    const existing = getConnectedAgentIds();
+    let actorId = meta.actorId;
+    let displayName = meta.name;
+    if (existing.has(actorId)) {
+      let n = 2;
+      while (existing.has(`${meta.actorId}-${n}`)) n += 1;
+      actorId = `${meta.actorId}-${n}`;
+      const baseLabel = meta.name.replace(/\s*\(@[^)]+\)\s*$/, '');
+      displayName = `${baseLabel} ${n} (@${actorId})`;
+    }
+    const idEl = document.getElementById('invite-actor-id');
+    const nameEl = document.getElementById('invite-actor-name');
+    if (idEl) idEl.value = actorId;
+    if (nameEl) nameEl.value = displayName;
+  }
+
+  function getActiveInviteTarget() {
+    const meta = AGENTS_META[selectedPreset] || { actorId: 'custom-agent', name: 'Custom Agent' };
+    const idEl = document.getElementById('invite-actor-id');
+    const nameEl = document.getElementById('invite-actor-name');
+    const rawId = (idEl?.value || meta.actorId).trim().replace(/^@+/, '').replace(/[^a-zA-Z0-9_-]/g, '-');
+    const actorId = rawId || meta.actorId;
+    const name = (nameEl?.value || '').trim() || `${actorId} (@${actorId})`;
+    return { actorId, name };
+  }
+
   function openInviteModal() {
     const modal = document.getElementById('invite-modal');
     if (modal) modal.classList.add('open');
+    populatePresetFields(selectedPreset);
     renderPromptPreview();
   }
 
@@ -142,6 +176,7 @@
     if (btnEl) {
       btnEl.className = 'preset-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-brand-coral text-white transition';
     }
+    populatePresetFields(key);
     renderPromptPreview();
   }
 
@@ -163,7 +198,7 @@ curl -fsSL -X POST "${base}/api/v1/threads/workspace/main" \\
 curl -fsSL -H "Authorization: Bearer ${tokDisplay}" "${base}/api/v1/context"
 
 5. Step 3 (Stay Listening & Respond to @mentions):
-Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events" with header "Authorization: Bearer ${tokDisplay}"). Whenever a new message from @you or a peer agent mentions your @handle, read the context, do the requested work, and reply via POST "${base}/api/v1/threads/workspace/main".
+Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events" with header "Authorization: Bearer ${tokDisplay}"). Whenever a new message from @you or a peer agent mentions @${a.actorId}, read the context, do the requested work, and reply via POST "${base}/api/v1/threads/workspace/main".
 
 6. Security & Privacy Rules (MANDATORY):
 - NEVER post credit card numbers, CVVs, SSNs, passwords, or private PII into Ripple chat, tasks, or reports.
@@ -181,22 +216,29 @@ Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events" w
   }
 
   function renderPromptPreview() {
-    const a = AGENTS_META[selectedPreset];
-    if (!a) return;
+    const target = getActiveInviteTarget();
     const base = publicBase;
     const mcpEl = document.getElementById('mcp-preview-url');
     const previewEl = document.getElementById('prompt-preview');
+    const warnEl = document.getElementById('invite-overwrite-warn');
+    if (warnEl) {
+      if (getConnectedAgentIds().has(target.actorId)) {
+        warnEl.textContent = `@${target.actorId} is already in this workspace — minting will rotate its existing token. Use a different handle (e.g. ${target.actorId}-2) to add another bot.`;
+        warnEl.classList.remove('hidden');
+      } else {
+        warnEl.classList.add('hidden');
+      }
+    }
     if (mcpEl) mcpEl.textContent = `${base}/mcp`;
-    if (previewEl) previewEl.textContent = buildPromptText(a, mintedTokenCache[selectedPreset]);
+    if (previewEl) previewEl.textContent = buildPromptText(target, mintedTokenCache[target.actorId]);
   }
 
   async function copyAgentPrompt() {
-    const a = AGENTS_META[selectedPreset];
-    if (!a) return;
-    if (!mintedTokenCache[selectedPreset]) {
+    const target = getActiveInviteTarget();
+    if (!mintedTokenCache[target.actorId]) {
       const res = await api('POST', '/api/v1/invites', {
-        actorId: a.actorId,
-        actorName: a.name,
+        actorId: target.actorId,
+        actorName: target.name,
         kind: 'agent',
         rotate: true
       });
@@ -204,14 +246,14 @@ Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events" w
         showToast('Sign in first to mint an invite token');
         return;
       }
-      mintedTokenCache[selectedPreset] = res.rawToken;
+      mintedTokenCache[target.actorId] = res.rawToken;
       renderPromptPreview();
       loadSnapshot();
     }
     const text = document.getElementById('prompt-preview')?.textContent || '';
     try {
       await navigator.clipboard.writeText(text);
-      showToast(`Minted token for ${a.name} & copied prompt!`);
+      showToast(`Minted token for ${target.name} & copied prompt!`);
       const btnText = document.getElementById('btn-copy-text');
       if (btnText) {
         btnText.textContent = 'Copied!';
@@ -685,6 +727,8 @@ Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events" w
 
   function bindEventListeners() {
     document.getElementById('global-search')?.addEventListener('input', renderAll);
+    document.getElementById('invite-actor-id')?.addEventListener('input', renderPromptPreview);
+    document.getElementById('invite-actor-name')?.addEventListener('input', renderPromptPreview);
     document.getElementById('chat-form')?.addEventListener('submit', handleSendChat);
 
     document.getElementById('new-task-title-input')?.addEventListener('keydown', e => {
