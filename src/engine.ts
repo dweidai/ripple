@@ -193,8 +193,8 @@ export class RippleEngine {
     const item: Item = {
       id: uid('item'),
       wsId: p.wsId,
-      title: String(input.title).trim(),
-      body: input.body ?? '',
+      title: redactSensitiveText(String(input.title).trim()),
+      body: redactSensitiveText(input.body ?? ''),
       priority,
       version: 1,
       status: 'open',
@@ -1369,17 +1369,18 @@ export class RippleEngine {
       }
     }
 
+    const safeSummary = redactSensitiveText(input.summary);
     const finalStatus = input.status ?? 'done';
     for (const s of steps) {
       if (s.status !== 'done' && s.status !== 'skipped') {
         s.status = finalStatus === 'failed' ? 'failed' : 'done';
         s.doneAt = now;
-        if (!s.note) s.note = input.summary;
+        if (!s.note) s.note = safeSummary;
         await this.store.updateStep(s);
       }
     }
 
-    run.reportSummary = input.summary;
+    run.reportSummary = safeSummary;
     if (input.reportData) run.reportData = input.reportData;
     run.status = finalStatus;
     run.heartbeatAt = now;
