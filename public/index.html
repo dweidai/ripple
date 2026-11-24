@@ -249,9 +249,12 @@
 
       <div id="auth-error-banner" class="hidden rounded-2xl bg-rose-50 border border-rose-200 px-3.5 py-2.5 text-xs text-rose-700"></div>
 
-      <!-- Step 1: Google Sign-In -->
+      <!-- Step 1: OAuth Sign-In -->
       <div id="auth-step-google" class="space-y-3">
-        <a href="/auth/google/start" id="btn-google-login" class="w-full bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold px-4 py-3 rounded-2xl flex items-center justify-center gap-2 shadow-sm transition">
+        <a href="/auth/github/start" id="btn-github-login" class="w-full bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold px-4 py-3 rounded-2xl flex items-center justify-center gap-2 shadow-sm transition">
+          <span>Continue with GitHub</span>
+        </a>
+        <a href="/auth/google/start" id="btn-google-login" class="hidden w-full bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 text-xs font-semibold px-4 py-3 rounded-2xl flex items-center justify-center gap-2 shadow-sm transition">
           <span>Continue with Google</span>
         </a>
         <div class="flex items-center gap-2 text-[11px] text-slate-400">

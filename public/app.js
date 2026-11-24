@@ -817,9 +817,11 @@ Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events" w
         const stepGoogle = document.getElementById('auth-step-google');
         const stepGithub = document.getElementById('auth-step-github');
         const btnGoogle = document.getElementById('btn-google-login');
+        const btnGithub = document.getElementById('btn-github-login');
 
-        if (btnGoogle && status.oauthEnabled && !status.oauthEnabled.google) {
-          btnGoogle.classList.add('opacity-50');
+        if (status.oauthEnabled) {
+          if (btnGoogle) btnGoogle.classList.toggle('hidden', !status.oauthEnabled.google);
+          if (btnGithub) btnGithub.classList.toggle('hidden', !status.oauthEnabled.github || status.oauthEnabled.google);
         }
 
         if (status.requiresGithubLink) {

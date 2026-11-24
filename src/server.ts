@@ -642,15 +642,16 @@ export function createRippleApp(
     if (!isGithubOAuthConfigured(cfg)) {
       return c.redirect('/?auth_error=github_not_configured');
     }
+    const requireDoubleOAuth = isGoogleOAuthConfigured(cfg);
     const rec = getSessionRecord(c);
-    if (!rec || !rec.session.googleSub) {
+    if (requireDoubleOAuth && (!rec || !rec.session.googleSub)) {
       return c.redirect('/?auth_error=google_login_required');
     }
     pruneSessions();
     const state = crypto.randomBytes(24).toString('base64url');
     oauthStates.set(state, {
       provider: 'github',
-      sessionId: rec.sid,
+      sessionId: rec?.sid,
       expiresAt: Date.now() + 10 * 60_000,
     });
     const base = resolvePublicUrl(c, publicUrl);
@@ -672,11 +673,12 @@ export function createRippleApp(
     const code = c.req.query('code') || '';
     const saved = oauthStates.get(state);
     oauthStates.delete(state);
-    if (!saved || saved.provider !== 'github' || !saved.sessionId || saved.expiresAt <= Date.now() || !code) {
+    if (!saved || saved.provider !== 'github' || saved.expiresAt <= Date.now() || !code) {
       return c.redirect('/?auth_error=invalid_oauth_state');
     }
+    const requireDoubleOAuth = isGoogleOAuthConfigured(cfg);
     const rec = getSessionRecord(c);
-    if (!rec || rec.sid !== saved.sessionId || !rec.session.googleSub) {
+    if (requireDoubleOAuth && (!rec || rec.sid !== saved.sessionId || !rec.session.googleSub)) {
       return c.redirect('/?auth_error=session_mismatch');
     }
     try {
@@ -695,51 +697,71 @@ export function createRippleApp(
         return c.redirect('/?auth_error=github_not_allowed');
       }
 
-      const existing = await engine.store.getUserByGoogleSub(rec.session.googleSub);
-      if (!existing) {
-        return c.redirect('/?auth_error=google_login_required');
-      }
-      // Enforce strict 1:1 binding once a GitHub account is linked to this Google account
-      if (existing.githubId && existing.githubId !== ghUser.id) {
-        return c.redirect('/?auth_error=github_account_mismatch');
-      }
       const now = new Date().toISOString();
-      const linked = await engine.store.upsertUserAccount({
-        ...existing,
-        githubId: ghUser.id,
-        githubLogin: ghUser.login,
-        updatedAt: now,
-      });
+      const wsId = process.env.RIPPLE_WS_ID ?? 'ws_default';
+      let actorId = 'you';
+      let displayName = ghUser.name ? `${ghUser.name} (@${ghUser.login})` : `@${ghUser.login}`;
+      let googleSub: string | undefined;
 
-      const wsId = linked.wsId;
-      let tokenRec = await engine.store.getTokenByActor(wsId, linked.actorId);
+      if (requireDoubleOAuth && rec?.session.googleSub) {
+        const existing = await engine.store.getUserByGoogleSub(rec.session.googleSub);
+        if (!existing) {
+          return c.redirect('/?auth_error=google_login_required');
+        }
+        if (existing.githubId && existing.githubId !== ghUser.id) {
+          return c.redirect('/?auth_error=github_account_mismatch');
+        }
+        const linked = await engine.store.upsertUserAccount({
+          ...existing,
+          githubId: ghUser.id,
+          githubLogin: ghUser.login,
+          updatedAt: now,
+        });
+        actorId = linked.actorId;
+        displayName = `${linked.name} (@${ghUser.login})`;
+        googleSub = linked.googleSub;
+      } else {
+        // Standalone GitHub OAuth mode
+        await engine.store.upsertUserAccount({
+          googleSub: `github:${ghUser.id}`,
+          email: `${ghUser.login}@users.noreply.github.com`,
+          name: ghUser.name || ghUser.login,
+          githubId: ghUser.id,
+          githubLogin: ghUser.login,
+          actorId,
+          wsId,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+
+      let tokenRec = await engine.store.getTokenByActor(wsId, actorId);
       let tokenHash = tokenRec?.tokenHash;
       if (!tokenHash) {
         const minted = await auth.mintToken({
           wsId,
-          actorId: linked.actorId,
-          actorName: `${linked.name} (@${ghUser.login})`,
+          actorId,
+          actorName: displayName,
           kind: 'human',
           roles: ['lead', 'reviewer'],
         });
         tokenHash = hashToken(minted.rawToken);
       } else {
-        await engine.store.updateTokenByActor(wsId, linked.actorId, {
-          actorName: `${linked.name} (@${ghUser.login})`,
+        await engine.store.updateTokenByActor(wsId, actorId, {
+          actorName: displayName,
           lastSeenAt: now,
           online: true,
         });
       }
 
-      // Rotate session ID on privilege upgrade (prevent session fixation)
-      sessions.delete(rec.sid);
+      if (rec) sessions.delete(rec.sid);
       const newSessionId = crypto.randomBytes(32).toString('base64url');
       sessions.set(newSessionId, {
         tokenHash,
-        googleSub: linked.googleSub,
+        googleSub,
         requiresGithubLink: false,
         wsId,
-        actorId: linked.actorId,
+        actorId,
         expiresAt: Date.now() + SESSION_TTL_MS,
       });
       const secureAttr = isHttpsRequest(c.req.header('x-forwarded-proto'), c.req.url) ? '; Secure' : '';
