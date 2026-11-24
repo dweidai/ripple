@@ -13,6 +13,7 @@ import type {
   RippleEvent,
   ThreadMessage,
   MessageReadReceipt,
+  UserAccount,
 } from '../types.js';
 import {
   DEFAULT_IDEMPOTENCY_TTL_MS,
@@ -478,6 +479,20 @@ export class MemoryStore implements Store {
     }
     const hash = hashIdempotencyScope(scope);
     this.idempotency.set(hash, { response, expiresAt: now + ttlMs });
+  }
+
+  private users = new Map<string, UserAccount>();
+
+  async getUserByGoogleSub(googleSub: string): Promise<UserAccount | undefined> {
+    const u = this.users.get(googleSub);
+    return u ? { ...u } : undefined;
+  }
+
+  async upsertUserAccount(account: UserAccount): Promise<UserAccount> {
+    const copy = { ...account };
+    this.users.set(copy.googleSub, copy);
+    this.schedulePersist();
+    return { ...copy };
   }
 }
 

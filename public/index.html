@@ -243,12 +243,38 @@
   <div id="auth-modal" class="modal-backdrop fixed inset-0 z-50 bg-slate-900/30 backdrop-blur-sm items-center justify-center p-4">
     <div class="bg-white rounded-3xl max-w-md w-full shadow-soft border border-neutral-100 p-6 space-y-4">
       <div>
-        <h2 class="text-base font-bold text-slate-900">Sign in to Ripple</h2>
-        <p class="text-xs text-slate-400 mt-1">Paste your workspace access token to continue.</p>
+        <h2 id="auth-modal-title" class="text-base font-bold text-slate-900">Sign in to Ripple</h2>
+        <p id="auth-modal-subtitle" class="text-xs text-slate-400 mt-1">Sign in with your Google account and link GitHub to continue.</p>
       </div>
-      <input id="auth-token-input" type="password" placeholder="rpl_human_..." class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-200" />
-      <div class="flex justify-end">
-        <button type="button" data-action="submit-auth-token" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-5 py-2.5 rounded-full shadow-btn transition">Connect</button>
+
+      <div id="auth-error-banner" class="hidden rounded-2xl bg-rose-50 border border-rose-200 px-3.5 py-2.5 text-xs text-rose-700"></div>
+
+      <!-- Step 1: Google Sign-In -->
+      <div id="auth-step-google" class="space-y-3">
+        <a href="/auth/google/start" id="btn-google-login" class="w-full bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold px-4 py-3 rounded-2xl flex items-center justify-center gap-2 shadow-sm transition">
+          <span>Continue with Google</span>
+        </a>
+        <div class="flex items-center gap-2 text-[11px] text-slate-400">
+          <div class="flex-1 h-px bg-slate-100"></div>
+          <span>or use workspace token</span>
+          <div class="flex-1 h-px bg-slate-100"></div>
+        </div>
+        <input id="auth-token-input" type="password" placeholder="rpl_human_..." class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-200" />
+        <div class="flex justify-end">
+          <button type="button" data-action="submit-auth-token" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-5 py-2.5 rounded-full shadow-btn transition">Connect</button>
+        </div>
+      </div>
+
+      <!-- Step 2: Mandatory GitHub Account Link -->
+      <div id="auth-step-github" class="hidden space-y-3">
+        <div class="rounded-2xl bg-orange-50/70 border border-orange-200/70 p-3.5 text-xs text-slate-700">
+          <p class="font-semibold text-slate-900">Google account verified</p>
+          <p id="auth-google-email" class="text-slate-500 mt-0.5"></p>
+          <p class="mt-2 text-slate-600">Ripple requires linking your GitHub account before you can access the workspace.</p>
+        </div>
+        <a href="/auth/github/start" id="btn-github-link" class="w-full bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold px-4 py-3 rounded-2xl flex items-center justify-center gap-2 shadow-sm transition">
+          <span>Link GitHub Account to Continue</span>
+        </a>
       </div>
     </div>
   </div>

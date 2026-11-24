@@ -11,6 +11,7 @@ import type {
   RippleEvent,
   ThreadMessage,
   MessageReadReceipt,
+  UserAccount,
 } from '../types.js';
 
 export interface TokenRecord extends Principal {
@@ -105,4 +106,8 @@ export interface Store {
   // Idempotency
   getIdempotency(scope: IdempotencyScope): Promise<unknown | undefined>;
   saveIdempotency(scope: IdempotencyScope, response: unknown, ttlMs?: number): Promise<void>;
+
+  // OAuth User Accounts (Google + mandatory GitHub link)
+  getUserByGoogleSub(googleSub: string): Promise<UserAccount | undefined>;
+  upsertUserAccount(account: UserAccount): Promise<UserAccount>;
 }

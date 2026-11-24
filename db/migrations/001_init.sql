@@ -201,3 +201,17 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS user_accounts (
+  google_sub TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  name TEXT NOT NULL,
+  picture TEXT,
+  github_id TEXT,
+  github_login TEXT,
+  actor_id TEXT NOT NULL,
+  ws_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_accounts_github_id ON user_accounts (github_id) WHERE github_id IS NOT NULL;
+

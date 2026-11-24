@@ -784,20 +784,69 @@ Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events" w
     bindEventListeners();
     renderPromptPreview();
 
+    const params = new URLSearchParams(window.location.search);
+    const authErr = params.get('auth_error');
+    if (authErr) {
+      const banner = document.getElementById('auth-error-banner');
+      if (banner) {
+        const errLabels = {
+          google_not_configured: 'Google OAuth is not configured on the server yet (set GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET).',
+          github_not_configured: 'GitHub OAuth is not configured on the server yet (set GITHUB_CLIENT_ID & GITHUB_CLIENT_SECRET).',
+          email_not_verified: 'Your Google email address must be verified.',
+          email_not_allowed: 'This Google account is not on the workspace allowlist.',
+          github_not_allowed: 'This GitHub account is not on the workspace allowlist.',
+          google_login_required: 'Please sign in with Google first.',
+          invalid_oauth_state: 'OAuth session expired. Please try signing in again.',
+          session_mismatch: 'Session mismatch during GitHub linking. Please try again.',
+          google_auth_failed: 'Google sign-in failed. Please try again.',
+          github_link_failed: 'GitHub account linking failed. Please try again.',
+          github_account_mismatch: 'This Google account is already bound to a different GitHub account.'
+        };
+        banner.textContent = errLabels[authErr] || 'Authentication error. Please try again.';
+        banner.classList.remove('hidden');
+      }
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('link_github')) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
     try {
-      const res = await fetch('/api/v1/whoami', { credentials: 'same-origin' });
-      if (res.status === 401) {
-        isAuthenticated = false;
-        openAuthModal();
-        return;
+      const statusRes = await fetch('/api/v1/auth/status', { credentials: 'same-origin' });
+      if (statusRes.ok) {
+        const status = await statusRes.json();
+        const stepGoogle = document.getElementById('auth-step-google');
+        const stepGithub = document.getElementById('auth-step-github');
+        const btnGoogle = document.getElementById('btn-google-login');
+
+        if (btnGoogle && status.oauthEnabled && !status.oauthEnabled.google) {
+          btnGoogle.classList.add('opacity-50');
+        }
+
+        if (status.requiresGithubLink) {
+          isAuthenticated = false;
+          if (stepGoogle) stepGoogle.classList.add('hidden');
+          if (stepGithub) stepGithub.classList.remove('hidden');
+          const emailEl = document.getElementById('auth-google-email');
+          if (emailEl && status.user?.email) {
+            emailEl.textContent = `${status.user.name || ''} (${status.user.email})`;
+          }
+          const titleEl = document.getElementById('auth-modal-title');
+          const subEl = document.getElementById('auth-modal-subtitle');
+          if (titleEl) titleEl.textContent = 'Step 2 of 2: Link GitHub';
+          if (subEl) subEl.textContent = 'Connect your GitHub account to unlock your Ripple workspace.';
+          openAuthModal();
+          return;
+        }
+
+        if (status.authenticated) {
+          isAuthenticated = true;
+          closeAuthModal();
+          await loadSnapshot();
+          connectSSE();
+          return;
+        }
       }
-      if (res.ok) {
-        isAuthenticated = true;
-        closeAuthModal();
-        await loadSnapshot();
-        connectSSE();
-        return;
-      }
+      isAuthenticated = false;
       openAuthModal();
     } catch (err) {
       console.error('Initial auth check failed:', err);

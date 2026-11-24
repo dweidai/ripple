@@ -267,3 +267,16 @@ export interface HeartbeatResponse {
   directives: string[];
 }
 
+export interface UserAccount {
+  googleSub: string;
+  email: string;
+  name: string;
+  picture?: string;
+  githubId?: string;
+  githubLogin?: string;
+  actorId: string;
+  wsId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+

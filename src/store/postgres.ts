@@ -13,6 +13,7 @@ import type {
   RippleEvent,
   ThreadMessage,
   MessageReadReceipt,
+  UserAccount,
 } from '../types.js';
 import {
   DEFAULT_IDEMPOTENCY_TTL_MS,
@@ -728,6 +729,54 @@ export class PostgresStore implements Store {
        WHERE idempotency_keys.expires_at IS NOT NULL AND idempotency_keys.expires_at <= NOW()`,
       [hash, scope.wsId, JSON.stringify(response), expiresAt],
     );
+  }
+
+  async getUserByGoogleSub(googleSub: string): Promise<UserAccount | undefined> {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM user_accounts WHERE google_sub = $1',
+      [googleSub],
+    );
+    if (!rows[0]) return undefined;
+    const r = rows[0];
+    return {
+      googleSub: r.google_sub,
+      email: r.email,
+      name: r.name,
+      picture: r.picture ?? undefined,
+      githubId: r.github_id ?? undefined,
+      githubLogin: r.github_login ?? undefined,
+      actorId: r.actor_id,
+      wsId: r.ws_id,
+      createdAt: new Date(r.created_at).toISOString(),
+      updatedAt: new Date(r.updated_at).toISOString(),
+    };
+  }
+
+  async upsertUserAccount(account: UserAccount): Promise<UserAccount> {
+    await this.pool.query(
+      `INSERT INTO user_accounts (google_sub, email, name, picture, github_id, github_login, actor_id, ws_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (google_sub) DO UPDATE SET
+         email = EXCLUDED.email,
+         name = EXCLUDED.name,
+         picture = EXCLUDED.picture,
+         github_id = COALESCE(EXCLUDED.github_id, user_accounts.github_id),
+         github_login = COALESCE(EXCLUDED.github_login, user_accounts.github_login),
+         updated_at = EXCLUDED.updated_at`,
+      [
+        account.googleSub,
+        account.email,
+        account.name,
+        account.picture ?? null,
+        account.githubId ?? null,
+        account.githubLogin ?? null,
+        account.actorId,
+        account.wsId,
+        account.createdAt,
+        account.updatedAt,
+      ],
+    );
+    return (await this.getUserByGoogleSub(account.googleSub)) ?? account;
   }
 }
 

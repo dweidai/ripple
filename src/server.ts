@@ -20,6 +20,16 @@ import { AuthService, assertLead, hashToken, recordToPrincipal } from './auth.js
 import { RippleEngine } from './engine.js';
 import { Errors, RippleError } from './errors.js';
 import { handleMcpHttpRequest } from './mcp.js';
+import {
+  buildGithubAuthUrl,
+  buildGoogleAuthUrl,
+  createPkcePair,
+  exchangeGithubCode,
+  exchangeGoogleCode,
+  isGithubOAuthConfigured,
+  isGoogleOAuthConfigured,
+  loadOAuthConfig,
+} from './oauth.js';
 import type { Principal } from './types.js';
 
 type Env = {
@@ -285,10 +295,23 @@ export function createRippleApp(
 
   const allowedOrigins = getAllowedOriginsFromEnv();
 
-  // Bounded session store for HttpOnly cookie authentication (H2)
+  // Bounded session store for HttpOnly cookie authentication (H2 + Google/GitHub OAuth)
   const sessions = new Map<
     string,
-    { tokenHash: string; wsId: string; actorId: string; expiresAt: number }
+    {
+      tokenHash?: string;
+      googleSub?: string;
+      requiresGithubLink?: boolean;
+      wsId: string;
+      actorId: string;
+      expiresAt: number;
+    }
+  >();
+
+  // Short-lived OAuth PKCE/state store (10m TTL)
+  const oauthStates = new Map<
+    string,
+    { provider: 'google' | 'github'; codeVerifier?: string; sessionId?: string; expiresAt: number }
   >();
 
   // Track active SSE streams by `${wsId}:${actorId}` so revocation closes them immediately (H6)
@@ -324,9 +347,12 @@ export function createRippleApp(
       if (oldest === undefined) break;
       sessions.delete(oldest);
     }
+    for (const [st, v] of oauthStates.entries()) {
+      if (v.expiresAt <= now) oauthStates.delete(st);
+    }
   }
 
-  async function authenticateFromCookie(c: Context): Promise<Principal | null> {
+  function getSessionRecord(c: Context) {
     const sid = parseCookie(c.req.header('cookie'), 'ripple_session');
     if (!sid) return null;
     const session = sessions.get(sid);
@@ -335,10 +361,17 @@ export function createRippleApp(
       sessions.delete(sid);
       return null;
     }
+    return { sid, session };
+  }
+
+  async function authenticateFromCookie(c: Context): Promise<Principal | null> {
+    const rec = getSessionRecord(c);
+    if (!rec) return null;
+    if (rec.session.requiresGithubLink || !rec.session.tokenHash) return null;
     try {
-      return await auth.authenticateByHash(session.tokenHash);
+      return await auth.authenticateByHash(rec.session.tokenHash);
     } catch {
-      sessions.delete(sid);
+      sessions.delete(rec.sid);
       return null;
     }
   }
@@ -510,8 +543,242 @@ export function createRippleApp(
     });
   });
 
+  // Google OAuth 2.0 (PKCE) + Mandatory GitHub Account Linking
+  app.get('/auth/google/start', (c) => {
+    const cfg = loadOAuthConfig();
+    if (!isGoogleOAuthConfigured(cfg)) {
+      return c.redirect('/?auth_error=google_not_configured');
+    }
+    pruneSessions();
+    const state = crypto.randomBytes(24).toString('base64url');
+    const pkce = createPkcePair();
+    oauthStates.set(state, {
+      provider: 'google',
+      codeVerifier: pkce.verifier,
+      expiresAt: Date.now() + 10 * 60_000,
+    });
+    const base = resolvePublicUrl(c, publicUrl);
+    const redirectUri = `${base}/auth/google/callback`;
+    const authUrl = buildGoogleAuthUrl({
+      clientId: cfg.googleClientId,
+      redirectUri,
+      state,
+      codeChallenge: pkce.challenge,
+    });
+    return c.redirect(authUrl);
+  });
+
+  app.get('/auth/google/callback', async (c) => {
+    const cfg = loadOAuthConfig();
+    if (!isGoogleOAuthConfigured(cfg)) {
+      return c.redirect('/?auth_error=google_not_configured');
+    }
+    const state = c.req.query('state') || '';
+    const code = c.req.query('code') || '';
+    const saved = oauthStates.get(state);
+    oauthStates.delete(state);
+    if (!saved || saved.provider !== 'google' || !saved.codeVerifier || saved.expiresAt <= Date.now() || !code) {
+      return c.redirect('/?auth_error=invalid_oauth_state');
+    }
+    try {
+      const base = resolvePublicUrl(c, publicUrl);
+      const redirectUri = `${base}/auth/google/callback`;
+      const profile = await exchangeGoogleCode({
+        code,
+        codeVerifier: saved.codeVerifier,
+        clientId: cfg.googleClientId,
+        clientSecret: cfg.googleClientSecret,
+        redirectUri,
+      });
+      if (!profile.emailVerified) {
+        return c.redirect('/?auth_error=email_not_verified');
+      }
+      if (cfg.allowedGoogleEmails.length > 0 && !cfg.allowedGoogleEmails.includes(profile.email)) {
+        return c.redirect('/?auth_error=email_not_allowed');
+      }
+
+      const wsId = process.env.RIPPLE_WS_ID ?? 'ws_default';
+      const now = new Date().toISOString();
+      const existing = await engine.store.getUserByGoogleSub(profile.sub);
+      const actorId = existing?.actorId ?? 'you';
+      const account = await engine.store.upsertUserAccount({
+        googleSub: profile.sub,
+        email: profile.email,
+        name: profile.name,
+        picture: profile.picture,
+        githubId: existing?.githubId,
+        githubLogin: existing?.githubLogin,
+        actorId,
+        wsId,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      });
+
+      pruneSessions();
+      const sessionId = crypto.randomBytes(32).toString('base64url');
+      const secureAttr = isHttpsRequest(c.req.header('x-forwarded-proto'), c.req.url) ? '; Secure' : '';
+
+      // True Double OAuth: Google OAuth ALWAYS requires GitHub OAuth verification on every login
+      sessions.set(sessionId, {
+        googleSub: account.googleSub,
+        requiresGithubLink: true,
+        wsId,
+        actorId: account.actorId,
+        expiresAt: Date.now() + 30 * 60_000,
+      });
+      c.header(
+        'Set-Cookie',
+        `ripple_session=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=1800${secureAttr}`,
+      );
+      return c.redirect('/?link_github=1');
+    } catch (err) {
+      console.error('[ripple] Google OAuth callback error:', err);
+      return c.redirect('/?auth_error=google_auth_failed');
+    }
+  });
+
+  app.get('/auth/github/start', (c) => {
+    const cfg = loadOAuthConfig();
+    if (!isGithubOAuthConfigured(cfg)) {
+      return c.redirect('/?auth_error=github_not_configured');
+    }
+    const rec = getSessionRecord(c);
+    if (!rec || !rec.session.googleSub) {
+      return c.redirect('/?auth_error=google_login_required');
+    }
+    pruneSessions();
+    const state = crypto.randomBytes(24).toString('base64url');
+    oauthStates.set(state, {
+      provider: 'github',
+      sessionId: rec.sid,
+      expiresAt: Date.now() + 10 * 60_000,
+    });
+    const base = resolvePublicUrl(c, publicUrl);
+    const redirectUri = `${base}/auth/github/callback`;
+    const authUrl = buildGithubAuthUrl({
+      clientId: cfg.githubClientId,
+      redirectUri,
+      state,
+    });
+    return c.redirect(authUrl);
+  });
+
+  app.get('/auth/github/callback', async (c) => {
+    const cfg = loadOAuthConfig();
+    if (!isGithubOAuthConfigured(cfg)) {
+      return c.redirect('/?auth_error=github_not_configured');
+    }
+    const state = c.req.query('state') || '';
+    const code = c.req.query('code') || '';
+    const saved = oauthStates.get(state);
+    oauthStates.delete(state);
+    if (!saved || saved.provider !== 'github' || !saved.sessionId || saved.expiresAt <= Date.now() || !code) {
+      return c.redirect('/?auth_error=invalid_oauth_state');
+    }
+    const rec = getSessionRecord(c);
+    if (!rec || rec.sid !== saved.sessionId || !rec.session.googleSub) {
+      return c.redirect('/?auth_error=session_mismatch');
+    }
+    try {
+      const base = resolvePublicUrl(c, publicUrl);
+      const redirectUri = `${base}/auth/github/callback`;
+      const ghUser = await exchangeGithubCode({
+        code,
+        clientId: cfg.githubClientId,
+        clientSecret: cfg.githubClientSecret,
+        redirectUri,
+      });
+      if (
+        cfg.allowedGithubLogins.length > 0 &&
+        !cfg.allowedGithubLogins.includes(ghUser.login.toLowerCase())
+      ) {
+        return c.redirect('/?auth_error=github_not_allowed');
+      }
+
+      const existing = await engine.store.getUserByGoogleSub(rec.session.googleSub);
+      if (!existing) {
+        return c.redirect('/?auth_error=google_login_required');
+      }
+      // Enforce strict 1:1 binding once a GitHub account is linked to this Google account
+      if (existing.githubId && existing.githubId !== ghUser.id) {
+        return c.redirect('/?auth_error=github_account_mismatch');
+      }
+      const now = new Date().toISOString();
+      const linked = await engine.store.upsertUserAccount({
+        ...existing,
+        githubId: ghUser.id,
+        githubLogin: ghUser.login,
+        updatedAt: now,
+      });
+
+      const wsId = linked.wsId;
+      let tokenRec = await engine.store.getTokenByActor(wsId, linked.actorId);
+      let tokenHash = tokenRec?.tokenHash;
+      if (!tokenHash) {
+        const minted = await auth.mintToken({
+          wsId,
+          actorId: linked.actorId,
+          actorName: `${linked.name} (@${ghUser.login})`,
+          kind: 'human',
+          roles: ['lead', 'reviewer'],
+        });
+        tokenHash = hashToken(minted.rawToken);
+      } else {
+        await engine.store.updateTokenByActor(wsId, linked.actorId, {
+          actorName: `${linked.name} (@${ghUser.login})`,
+          lastSeenAt: now,
+          online: true,
+        });
+      }
+
+      // Rotate session ID on privilege upgrade (prevent session fixation)
+      sessions.delete(rec.sid);
+      const newSessionId = crypto.randomBytes(32).toString('base64url');
+      sessions.set(newSessionId, {
+        tokenHash,
+        googleSub: linked.googleSub,
+        requiresGithubLink: false,
+        wsId,
+        actorId: linked.actorId,
+        expiresAt: Date.now() + SESSION_TTL_MS,
+      });
+      const secureAttr = isHttpsRequest(c.req.header('x-forwarded-proto'), c.req.url) ? '; Secure' : '';
+      c.header(
+        'Set-Cookie',
+        `ripple_session=${newSessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${secureAttr}`,
+      );
+      return c.redirect('/');
+    } catch (err) {
+      console.error('[ripple] GitHub OAuth callback error:', err);
+      return c.redirect('/?auth_error=github_link_failed');
+    }
+  });
+
   // Auth middleware for /api/v1/*
   const api = new Hono<Env>();
+
+  // Public auth status endpoint for UI login / GitHub-link gating
+  api.get('/auth/status', async (c) => {
+    const cfg = loadOAuthConfig();
+    const rec = getSessionRecord(c);
+    let user: { email?: string; name?: string; githubLogin?: string } | null = null;
+    if (rec?.session.googleSub) {
+      const acc = await engine.store.getUserByGoogleSub(rec.session.googleSub);
+      if (acc) {
+        user = { email: acc.email, name: acc.name, githubLogin: acc.githubLogin };
+      }
+    }
+    const authenticated = Boolean(await authenticateFromCookie(c));
+    return c.json({
+      oauthEnabled: {
+        google: isGoogleOAuthConfigured(cfg),
+        github: isGithubOAuthConfigured(cfg),
+      },
+      authenticated,
+      requiresGithubLink: Boolean(rec?.session.requiresGithubLink),
+      user,
+    });
+  });
 
   // Per-IP rate limiter for session login (15 attempts / 60s)
   const loginAttempts = new Map<string, number[]>();
@@ -586,6 +853,15 @@ export function createRippleApp(
       c.set('principal', principal);
       await next();
       return;
+    }
+
+    const sessionRec = getSessionRecord(c);
+    if (sessionRec?.session.requiresGithubLink) {
+      throw new RippleError(
+        'github_link_required',
+        403,
+        'You must link your GitHub account to your Google account before using Ripple',
+      );
     }
 
     const cookiePrincipal = await authenticateFromCookie(c);
