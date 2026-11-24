@@ -1567,12 +1567,13 @@ export class RippleEngine {
       throw Errors.notFound('ThreadMessage', input.replyToId);
     }
     let hopCount = 0;
+    const maxAgentHops = Math.max(1, Number(process.env.RIPPLE_MAX_AGENT_HOPS ?? 25) || 25);
     if (p.kind === 'agent') {
       const prev = existingMsgs[existingMsgs.length - 1];
       hopCount = prev && prev.authorKind === 'agent' ? (prev.hopCount ?? 1) + 1 : 1;
-      if (hopCount > 6) {
+      if (hopCount > maxAgentHops) {
         throw Errors.badRequest(
-          `Anti-loop guard triggered: hopCount (${hopCount}) exceeds max consecutive agent turns (6) without human input.`,
+          `Anti-loop guard triggered: hopCount (${hopCount}) exceeds max consecutive agent turns (${maxAgentHops}) without human input.`,
         );
       }
     }

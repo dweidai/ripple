@@ -383,8 +383,8 @@ describe('RippleEngine core invariants', () => {
     assert.deepEqual(m0.message.mentions, ['agy', 'muse']);
     assert.equal(m0.message.hopCount, 0);
 
-    // 6 consecutive agent replies succeed, 7th without human input is blocked by anti-loop guard
-    for (let i = 1; i <= 6; i++) {
+    // 25 consecutive agent replies succeed, 26th without human input is blocked by anti-loop guard
+    for (let i = 1; i <= 25; i++) {
       const sender = i % 2 === 1 ? agy.principal : grok.principal;
       const res = await engine.postThreadMessage(sender, {
         scopeKind: 'workspace',
@@ -399,7 +399,7 @@ describe('RippleEngine core invariants', () => {
         engine.postThreadMessage(agy.principal, {
           scopeKind: 'workspace',
           scopeId: 'main',
-          body: '@grok turn 7 runaway loop',
+          body: '@grok turn 26 runaway loop',
         }),
       (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
     );
