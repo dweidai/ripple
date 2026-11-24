@@ -544,12 +544,22 @@ export function createRippleApp(
   });
 
   // Google OAuth 2.0 (PKCE) + Mandatory GitHub Account Linking
+  const MAX_OAUTH_STATES = 500;
+  function capOAuthStates() {
+    while (oauthStates.size >= MAX_OAUTH_STATES) {
+      const oldest = oauthStates.keys().next().value;
+      if (oldest === undefined) break;
+      oauthStates.delete(oldest);
+    }
+  }
+
   app.get('/auth/google/start', (c) => {
     const cfg = loadOAuthConfig();
     if (!isGoogleOAuthConfigured(cfg)) {
       return c.redirect('/?auth_error=google_not_configured');
     }
     pruneSessions();
+    capOAuthStates();
     const state = crypto.randomBytes(24).toString('base64url');
     const pkce = createPkcePair();
     oauthStates.set(state, {
@@ -557,6 +567,11 @@ export function createRippleApp(
       codeVerifier: pkce.verifier,
       expiresAt: Date.now() + 10 * 60_000,
     });
+    const secureAttr = isHttpsRequest(c.req.header('x-forwarded-proto'), c.req.url) ? '; Secure' : '';
+    c.header(
+      'Set-Cookie',
+      `ripple_oauth_state=${state}; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=600${secureAttr}`,
+    );
     const base = resolvePublicUrl(c, publicUrl);
     const redirectUri = `${base}/auth/google/callback`;
     const authUrl = buildGoogleAuthUrl({
@@ -574,10 +589,21 @@ export function createRippleApp(
       return c.redirect('/?auth_error=google_not_configured');
     }
     const state = c.req.query('state') || '';
+    const cookieState = parseCookie(c.req.header('cookie'), 'ripple_oauth_state') || '';
     const code = c.req.query('code') || '';
     const saved = oauthStates.get(state);
     oauthStates.delete(state);
-    if (!saved || saved.provider !== 'google' || !saved.codeVerifier || saved.expiresAt <= Date.now() || !code) {
+    const secureAttrClear = isHttpsRequest(c.req.header('x-forwarded-proto'), c.req.url) ? '; Secure' : '';
+    c.header('Set-Cookie', `ripple_oauth_state=; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=0${secureAttrClear}`);
+    if (
+      !state ||
+      state !== cookieState ||
+      !saved ||
+      saved.provider !== 'google' ||
+      !saved.codeVerifier ||
+      saved.expiresAt <= Date.now() ||
+      !code
+    ) {
       return c.redirect('/?auth_error=invalid_oauth_state');
     }
     try {
@@ -629,6 +655,7 @@ export function createRippleApp(
       c.header(
         'Set-Cookie',
         `ripple_session=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=1800${secureAttr}`,
+        { append: true },
       );
       return c.redirect('/?link_github=1');
     } catch (err) {
@@ -648,12 +675,18 @@ export function createRippleApp(
       return c.redirect('/?auth_error=google_login_required');
     }
     pruneSessions();
+    capOAuthStates();
     const state = crypto.randomBytes(24).toString('base64url');
     oauthStates.set(state, {
       provider: 'github',
       sessionId: rec?.sid,
       expiresAt: Date.now() + 10 * 60_000,
     });
+    const secureAttr = isHttpsRequest(c.req.header('x-forwarded-proto'), c.req.url) ? '; Secure' : '';
+    c.header(
+      'Set-Cookie',
+      `ripple_oauth_state=${state}; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=600${secureAttr}`,
+    );
     const base = resolvePublicUrl(c, publicUrl);
     const redirectUri = `${base}/auth/github/callback`;
     const authUrl = buildGithubAuthUrl({
@@ -670,10 +703,20 @@ export function createRippleApp(
       return c.redirect('/?auth_error=github_not_configured');
     }
     const state = c.req.query('state') || '';
+    const cookieState = parseCookie(c.req.header('cookie'), 'ripple_oauth_state') || '';
     const code = c.req.query('code') || '';
     const saved = oauthStates.get(state);
     oauthStates.delete(state);
-    if (!saved || saved.provider !== 'github' || saved.expiresAt <= Date.now() || !code) {
+    const secureAttrClear = isHttpsRequest(c.req.header('x-forwarded-proto'), c.req.url) ? '; Secure' : '';
+    c.header('Set-Cookie', `ripple_oauth_state=; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=0${secureAttrClear}`);
+    if (
+      !state ||
+      state !== cookieState ||
+      !saved ||
+      saved.provider !== 'github' ||
+      saved.expiresAt <= Date.now() ||
+      !code
+    ) {
       return c.redirect('/?auth_error=invalid_oauth_state');
     }
     const requireDoubleOAuth = isGoogleOAuthConfigured(cfg);
@@ -768,6 +811,7 @@ export function createRippleApp(
       c.header(
         'Set-Cookie',
         `ripple_session=${newSessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${secureAttr}`,
+        { append: true },
       );
       return c.redirect('/');
     } catch (err: any) {
