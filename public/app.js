@@ -194,11 +194,12 @@ curl -fsSL -X POST "${base}/api/v1/threads/workspace/main" \\
   -H "Content-Type: application/json" \\
   -d '{"body":"@you Hi David! ${a.name} is connected and ready to collaborate."}'
 
-4. Step 2 (Get Context & Backlog):
+4. Step 2 (Get Initial Context & Active Locks):
 curl -fsSL -H "Authorization: Bearer ${tokDisplay}" "${base}/api/v1/context"
+Check activeLocks[] before launching long jobs or shared-API benchmarks so you don't collide with peer agents. Claim your task via POST "${base}/api/v1/items/<id>/claim" and declare touches[] in your plan.
 
-5. Step 3 (Stay Listening & Respond to @mentions):
-Poll GET "${base}/api/v1/context" every 10s (or stream "${base}/api/v1/events" with header "Authorization: Bearer ${tokDisplay}"). Whenever a new message from @you or a peer agent mentions @${a.actorId}, read the context, do the requested work, and reply via POST "${base}/api/v1/threads/workspace/main".
+5. Step 3 (Stay Listening via Lightweight Delta Inbox):
+Poll GET "${base}/api/v1/inbox?since_id=<latestMessageId>" every 10s (or MCP tool ripple_inbox, or SSE "${base}/api/v1/events"). It returns only new @mentions, assigned cards/items, activeLocks, and dialogueHealth (remainingHops) so you don't waste tokens. Reply via POST "${base}/api/v1/threads/workspace/main".
 
 6. Report Observability & Live Status (Thinking, Working, Quota, Error):
 Whenever you are thinking, running benchmarks, waiting, or run into an error or rate limits (e.g. out of tokens or Groq quota), update your status so David can see your live state in Ripple:
@@ -339,6 +340,8 @@ Or use MCP tool ripple_set_status.
         r: (data.runs || []).map(x => x.id + x.status),
         a: (data.agents || []).map(x => x.actorId + (x.activityState || '') + (x.statusText || '') + (x.errorDetail || '') + (x.online ? '1' : '0')),
         ar: (data.artifacts || []).length,
+        dh: data.dialogueHealth ? `${data.dialogueHealth.hopCount}/${data.dialogueHealth.maxAgentHops}` : '',
+        al: (data.activeLocks || []).map(l => l.runId + (l.touches || []).join(',')).join('|'),
         q: document.getElementById('global-search')?.value || ''
       });
       if (sig !== lastRenderSig) {
@@ -476,6 +479,219 @@ Or use MCP tool ripple_set_status.
     return null;
   }
 
+  let inspectedActorId = null;
+
+  function formatRelativeTime(iso) {
+    if (!iso) return 'never';
+    const diffSec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+    if (diffSec < 10) return 'just now';
+    if (diffSec < 60) return `${diffSec}s ago`;
+    const mins = Math.floor(diffSec / 60);
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
+  }
+
+  // Strict XSS-safe Markdown renderer: escapes everything first via esc(), then formats code/bold/links/@mentions.
+  function formatMessageBody(raw) {
+    let html = esc(raw || '');
+    const blocks = [];
+
+    // 1. Fenced code blocks
+    html = html.replace(/```(?:[a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g, (_, code) => {
+      const idx = blocks.length;
+      blocks.push(`<pre class="my-1.5 p-2.5 rounded-xl bg-slate-900 text-slate-100 text-[11px] font-mono overflow-x-auto whitespace-pre-wrap">${code.trim()}</pre>`);
+      return `\u0000BLK${idx}\u0000`;
+    });
+
+    // 2. Inline code
+    html = html.replace(/`([^`\n]+)`/g, (_, code) => {
+      const idx = blocks.length;
+      blocks.push(`<code class="px-1 py-0.5 rounded bg-slate-100 text-slate-800 text-[11px] font-mono">${code}</code>`);
+      return `\u0000BLK${idx}\u0000`;
+    });
+
+    // 3. Bold **text**
+    html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong class="font-semibold text-slate-900">$1</strong>');
+
+    // 4. Clickable https/http links
+    html = html.replace(/\b(https?:\/\/[^\s<>"']+)/g, (match) => {
+      const trimmed = match.replace(/[.,;:!?)]+$/, '');
+      const trailing = match.slice(trimmed.length);
+      const safe = safeHttpUrl(trimmed.replace(/&amp;/g, '&'));
+      if (!safe) return match;
+      return `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer" class="text-brand-coral underline hover:opacity-80 break-all">${trimmed}</a>${trailing}`;
+    });
+
+    // 5. Highlight @mentions
+    html = html.replace(/(^|[\s(])@([a-zA-Z0-9_-]{2,32})\b/g, '$1<span class="font-semibold text-brand-coral">@$2</span>');
+
+    // 6. Restore code placeholders
+    html = html.replace(/\u0000BLK(\d+)\u0000/g, (_, idx) => blocks[Number(idx)] || '');
+    return html;
+  }
+
+  function openAgentInspector(actorId) {
+    if (!snapshot) return;
+    const agent = (snapshot.agents || []).find(a => a.actorId === actorId);
+    if (!agent) return;
+    inspectedActorId = actorId;
+
+    const nameEl = document.getElementById('inspector-name');
+    const handleEl = document.getElementById('inspector-handle');
+    const bodyEl = document.getElementById('inspector-body');
+    if (nameEl) nameEl.textContent = agent.actorName || agent.actorId;
+    if (handleEl) handleEl.textContent = `@${agent.actorId} · Last seen ${formatRelativeTime(agent.lastSeenAt)}`;
+
+    const state = agent.activityState || (agent.online ? 'online' : 'offline');
+    const locks = (snapshot.activeLocks || []).filter(l => l.ownerAgent === actorId);
+    const assignedItems = (snapshot.items || []).filter(i => i.assigneeId === actorId && i.status !== 'done' && i.status !== 'dropped');
+
+    let html = `
+      <div class="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-2xl p-3">
+        <span class="text-slate-500 font-medium">Live Status</span>
+        <span class="font-semibold px-2.5 py-0.5 rounded-full ${state === 'error' || state === 'quota_exceeded' ? 'bg-rose-100 text-rose-700' : state === 'thinking' ? 'bg-amber-100 text-amber-800' : state === 'working' ? 'bg-orange-100 text-brand-coral' : state === 'discussing' ? 'bg-sky-100 text-sky-700' : state === 'offline' ? 'bg-slate-200 text-slate-600' : 'bg-emerald-100 text-emerald-700'}">${esc(state)}</span>
+      </div>
+    `;
+
+    if (agent.statusText) {
+      html += `
+        <div class="bg-slate-50 border border-slate-100 rounded-2xl p-3">
+          <div class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold mb-1">Current Activity</div>
+          <div class="text-slate-700">${esc(agent.statusText)}</div>
+        </div>
+      `;
+    }
+
+    if (agent.errorDetail) {
+      html += `
+        <div class="bg-rose-50 border border-rose-200 rounded-2xl p-3">
+          <div class="text-[10px] uppercase tracking-wider text-rose-600 font-semibold mb-1">⚠️ Error / Quota Detail</div>
+          <div class="text-rose-800 whitespace-pre-wrap break-words">${esc(agent.errorDetail)}</div>
+        </div>
+      `;
+    }
+
+    if (locks.length > 0) {
+      html += `
+        <div class="bg-orange-50/60 border border-orange-100 rounded-2xl p-3 space-y-1.5">
+          <div class="text-[10px] uppercase tracking-wider text-brand-coral font-semibold">Active Runs &amp; Resource Locks</div>
+          ${locks.map(l => `
+            <div class="text-slate-700">
+              <div class="font-medium">${esc(l.title || l.runId)} <span class="text-[10px] text-slate-400">(${esc(l.status)})</span></div>
+              ${(l.touches || []).length > 0 ? `<div class="flex flex-wrap gap-1 mt-1">${l.touches.map(t => `<span class="text-[10px] px-1.5 py-0.5 bg-white border border-orange-200 rounded text-slate-600 font-mono">${esc(t)}</span>`).join('')}</div>` : ''}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    if (assignedItems.length > 0) {
+      html += `
+        <div class="bg-slate-50 border border-slate-100 rounded-2xl p-3 space-y-1">
+          <div class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Assigned Backlog (${assignedItems.length})</div>
+          ${assignedItems.map(i => `<div class="text-slate-700 truncate">• ${esc(i.title)} <span class="text-[10px] text-slate-400">(${esc(i.status)})</span></div>`).join('')}
+        </div>
+      `;
+    }
+
+    if (bodyEl) bodyEl.innerHTML = html;
+    document.getElementById('agent-inspector-modal')?.classList.add('open');
+  }
+
+  function closeAgentInspector() {
+    document.getElementById('agent-inspector-modal')?.classList.remove('open');
+    inspectedActorId = null;
+  }
+
+  async function rotateAgentAndCopy(actorId) {
+    if (!actorId) return;
+    const agent = (snapshot?.agents || []).find(a => a.actorId === actorId);
+    const name = agent?.actorName || actorId;
+    const res = await api('POST', '/api/v1/invites', {
+      actorId,
+      actorName: name,
+      kind: 'agent',
+      rotate: true
+    });
+    if (!res || !res.rawToken) {
+      showToast('Failed to rotate token');
+      return;
+    }
+    mintedTokenCache[actorId] = res.rawToken;
+    const prompt = buildPromptText({ actorId, name }, res.rawToken);
+    try {
+      await navigator.clipboard.writeText(prompt);
+      showToast(`Rotated token for @${actorId} & copied prompt!`);
+    } catch {
+      showToast(`Rotated token for @${actorId}!`);
+    }
+    closeAgentInspector();
+    loadSnapshot();
+  }
+
+  async function resetHopsAndContinue() {
+    const res = await api('POST', '/api/v1/threads/workspace/main', {
+      body: '@all checkpoint — proceed!'
+    });
+    if (res) {
+      showToast('Reset turn counter — agents unblocked!');
+      loadSnapshot();
+    }
+  }
+
+  function hideMentionPopover() {
+    document.getElementById('mention-popover')?.classList.add('hidden');
+  }
+
+  function updateMentionPopover() {
+    const input = document.getElementById('chat-input');
+    const pop = document.getElementById('mention-popover');
+    if (!input || !pop) return;
+    const val = input.value;
+    const pos = input.selectionStart ?? val.length;
+    const before = val.slice(0, pos);
+    const match = before.match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
+    if (!match) {
+      pop.classList.add('hidden');
+      return;
+    }
+    const prefix = match[1].toLowerCase();
+    const agents = (snapshot?.agents || []).filter(a => a.kind === 'agent');
+    const candidates = [
+      ...agents.map(a => ({ id: a.actorId, label: a.actorName || a.actorId, state: a.activityState })),
+      { id: 'all', label: 'All Agents', state: 'online' }
+    ].filter(c => c.id.toLowerCase().startsWith(prefix) || c.label.toLowerCase().includes(prefix));
+
+    if (candidates.length === 0) {
+      pop.classList.add('hidden');
+      return;
+    }
+
+    pop.innerHTML = candidates.slice(0, 6).map(c => `
+      <button type="button" data-action="pick-mention" data-mention="${esc(c.id)}" class="px-2.5 py-1 rounded-full text-xs font-medium bg-slate-50 hover:bg-orange-50 text-slate-700 hover:text-brand-coral border border-slate-200/80 transition flex items-center gap-1.5">
+        <span class="font-semibold">@${esc(c.id)}</span>
+        <span class="text-[10px] text-slate-400">${esc(c.label)}</span>
+      </button>
+    `).join('');
+    pop.classList.remove('hidden');
+  }
+
+  function applyMentionPick(handle) {
+    const input = document.getElementById('chat-input');
+    if (!input) return;
+    const val = input.value;
+    const pos = input.selectionStart ?? val.length;
+    const before = val.slice(0, pos);
+    const after = val.slice(pos);
+    const replaced = before.replace(/((?:^|\s))@[a-zA-Z0-9_-]*$/, `$1@${handle} `);
+    input.value = replaced + after;
+    input.focus();
+    input.setSelectionRange(replaced.length, replaced.length);
+    hideMentionPopover();
+  }
+
   function renderAll() {
     if (!snapshot) return;
     const query = (document.getElementById('global-search')?.value || '').trim().toLowerCase();
@@ -591,12 +807,74 @@ Or use MCP tool ripple_set_status.
               ${statusSubline}
             </div>
           </div>
-          <button type="button" data-action="revoke-agent" data-actor-id="${esc(a.actorId)}" title="Revoke access" class="opacity-60 hover:opacity-100 text-[10px] text-slate-400 hover:text-rose-600 px-2 py-1 rounded-full hover:bg-rose-50 transition flex-shrink-0 ml-1">Revoke</button>
+          <div class="flex items-center gap-1 flex-shrink-0 ml-1">
+            <button type="button" data-action="inspect-agent" data-actor-id="${esc(a.actorId)}" title="Inspect agent status &amp; locks" class="opacity-70 hover:opacity-100 text-[10px] text-slate-500 hover:text-brand-coral px-2 py-1 rounded-full hover:bg-orange-50 transition">Info</button>
+            <button type="button" data-action="revoke-agent" data-actor-id="${esc(a.actorId)}" title="Revoke access" class="opacity-60 hover:opacity-100 text-[10px] text-slate-400 hover:text-rose-600 px-2 py-1 rounded-full hover:bg-rose-50 transition">Revoke</button>
+          </div>
         </div>
       `;
     });
     const rosterEl = document.getElementById('sidebar-roster');
     if (rosterEl) rosterEl.innerHTML = rosterHtml;
+
+    // 1-Tap Reset & Continue Banner when hopCount is near or at limit
+    const hopBanner = document.getElementById('hop-banner');
+    const dh = snapshot.dialogueHealth;
+    if (hopBanner) {
+      if (dh && (dh.paused || dh.hopCount >= Math.max(1, dh.maxAgentHops - 3))) {
+        hopBanner.className = `rounded-2xl px-3.5 py-2 flex items-center justify-between gap-2 text-xs border ${dh.paused ? 'bg-rose-50 border-rose-200 text-rose-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`;
+        const label = dh.paused
+          ? `⏸️ Agents paused at ${dh.hopCount}/${dh.maxAgentHops} autonomous turns`
+          : `⚠️ Agents at ${dh.hopCount}/${dh.maxAgentHops} turns (${dh.remainingHops} left)`;
+        hopBanner.innerHTML = `
+          <span class="font-medium truncate">${esc(label)}</span>
+          <button type="button" data-action="reset-hops" class="flex-shrink-0 px-3 py-1 rounded-full text-[11px] font-semibold bg-brand-coral hover:bg-brand-coralHover text-white shadow-sm transition">Reset &amp; Continue</button>
+        `;
+      } else {
+        hopBanner.className = 'hidden';
+        hopBanner.innerHTML = '';
+      }
+    }
+
+    // Live Activity Bar above chat composer
+    const actBar = document.getElementById('activity-bar');
+    if (actBar) {
+      const interesting = agents.filter(a => {
+        const s = a.activityState || (a.online ? 'online' : 'offline');
+        return s === 'error' || s === 'quota_exceeded' || s === 'thinking' || s === 'working' || s === 'discussing';
+      });
+      if (interesting.length > 0) {
+        actBar.classList.remove('hidden');
+        actBar.innerHTML = interesting.map(a => {
+          const s = a.activityState;
+          let dotCls = 'bg-sky-500';
+          let pillCls = 'bg-sky-50 text-sky-700 border-sky-200/70';
+          let label = s;
+          if (s === 'error' || s === 'quota_exceeded') {
+            dotCls = 'bg-rose-500 animate-pulse';
+            pillCls = 'bg-rose-50 text-rose-700 border-rose-200';
+            label = s === 'quota_exceeded' ? 'quota exceeded' : 'error';
+          } else if (s === 'thinking') {
+            dotCls = 'bg-amber-500 animate-pulse';
+            pillCls = 'bg-amber-50 text-amber-800 border-amber-200/70';
+          } else if (s === 'working') {
+            dotCls = 'bg-orange-500';
+            pillCls = 'bg-orange-50 text-brand-coral border-orange-200/70';
+          }
+          const detail = (s === 'error' || s === 'quota_exceeded') ? (a.errorDetail || a.statusText || '') : (a.statusText || '');
+          return `
+            <button type="button" data-action="inspect-agent" data-actor-id="${esc(a.actorId)}" title="${esc(detail || label)}" class="flex-shrink-0 inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border ${pillCls} hover:opacity-90 transition">
+              <span class="w-2 h-2 rounded-full ${dotCls}"></span>
+              <span class="font-semibold">@${esc(a.actorId)}</span>
+              <span>${esc(label)}</span>
+            </button>
+          `;
+        }).join('');
+      } else {
+        actBar.classList.add('hidden');
+        actBar.innerHTML = '';
+      }
+    }
 
     // Chat Stream
     const filteredMsgs = query ? msgs.filter(m => (m.body + ' ' + m.author).toLowerCase().includes(query)) : msgs;
@@ -622,7 +900,7 @@ Or use MCP tool ripple_set_status.
         chatHtml += `
           <div class="flex justify-end items-end space-x-2">
             <div class="flex flex-col items-end max-w-xl">
-              <div class="bg-white border border-slate-200/80 rounded-2xl rounded-tr-sm px-4 py-3 shadow-bubble text-slate-800 text-sm leading-relaxed whitespace-pre-wrap">${esc(m.body)}</div>
+              <div class="bg-white border border-slate-200/80 rounded-2xl rounded-tr-sm px-4 py-3 shadow-bubble text-slate-800 text-sm leading-relaxed whitespace-pre-wrap break-words">${formatMessageBody(m.body)}</div>
               <div class="flex flex-wrap items-center justify-end gap-1.5 mt-1 mr-1">
                 ${readPills}
                 <span class="text-[10px] text-slate-400">${esc(time)}</span>
@@ -632,7 +910,7 @@ Or use MCP tool ripple_set_status.
           </div>
         `;
       } else {
-        const isAgy = m.authorId === 'agy';
+        const isAgy = m.actorId === 'agy' || m.authorId === 'agy';
         const avatarStyle = isAgy ? 'bg-brand-coral text-white' : 'bg-violet-500 text-white';
         const bubbleStyle = isAgy ? 'bg-brand-peachBg border-brand-borderSubtle' : 'bg-violet-50/50 border-violet-100';
         const nameStyle = isAgy ? 'text-brand-coral' : 'text-violet-700';
@@ -647,7 +925,7 @@ Or use MCP tool ripple_set_status.
                   <span class="font-semibold text-xs ${nameStyle}">${esc(m.author)}</span>
                   <span class="text-[10px] text-slate-400">${esc(time)}</span>
                 </div>
-                <div class="text-slate-700 whitespace-pre-wrap">${esc(m.body)}</div>
+                <div class="text-slate-700 whitespace-pre-wrap break-words">${formatMessageBody(m.body)}</div>
               </div>
               <div class="flex flex-wrap items-center gap-2 mt-1 pl-1 text-slate-400 text-[11px]">
                 <button type="button" data-action="ack-msg" data-msg-id="${esc(m.id)}" class="hover:text-emerald-600 transition">✓ Ack</button>
@@ -783,7 +1061,26 @@ Or use MCP tool ripple_set_status.
     document.getElementById('global-search')?.addEventListener('input', renderAll);
     document.getElementById('invite-actor-id')?.addEventListener('input', renderPromptPreview);
     document.getElementById('invite-actor-name')?.addEventListener('input', renderPromptPreview);
-    document.getElementById('chat-form')?.addEventListener('submit', handleSendChat);
+    document.getElementById('chat-form')?.addEventListener('submit', e => {
+      hideMentionPopover();
+      handleSendChat(e);
+    });
+
+    const chatInput = document.getElementById('chat-input');
+    chatInput?.addEventListener('input', updateMentionPopover);
+    chatInput?.addEventListener('keydown', e => {
+      const pop = document.getElementById('mention-popover');
+      if (!pop || pop.classList.contains('hidden')) return;
+      if (e.key === 'Escape') {
+        hideMentionPopover();
+      } else if (e.key === 'Tab') {
+        const first = pop.querySelector('[data-action="pick-mention"]');
+        if (first) {
+          e.preventDefault();
+          applyMentionPick(first.dataset.mention || '');
+        }
+      }
+    });
 
     document.getElementById('new-task-title-input')?.addEventListener('keydown', e => {
       if (e.key === 'Enter') submitNewTask();
@@ -796,7 +1093,10 @@ Or use MCP tool ripple_set_status.
     // Delegated click handler for all static and dynamic interactive elements.
     document.addEventListener('click', e => {
       const target = e.target instanceof Element ? e.target.closest('[data-action]') : null;
-      if (!target) return;
+      if (!target) {
+        if (!(e.target instanceof Element && e.target.closest('#chat-form'))) hideMentionPopover();
+        return;
+      }
       const action = target.dataset.action;
 
       switch (action) {
@@ -811,6 +1111,36 @@ Or use MCP tool ripple_set_status.
           break;
         case 'close-invite-modal':
           closeInviteModal();
+          break;
+        case 'inspect-agent':
+          e.stopPropagation();
+          openAgentInspector(target.dataset.actorId || '');
+          break;
+        case 'close-inspector-modal':
+          closeAgentInspector();
+          break;
+        case 'inspector-revoke':
+          if (inspectedActorId) {
+            const id = inspectedActorId;
+            closeAgentInspector();
+            revokeAgent(e, id);
+          }
+          break;
+        case 'inspector-tag':
+          if (inspectedActorId) {
+            const id = inspectedActorId;
+            closeAgentInspector();
+            insertTag(`@${id} `);
+          }
+          break;
+        case 'inspector-rotate':
+          if (inspectedActorId) rotateAgentAndCopy(inspectedActorId);
+          break;
+        case 'reset-hops':
+          resetHopsAndContinue();
+          break;
+        case 'pick-mention':
+          applyMentionPick(target.dataset.mention || '');
           break;
         case 'switch-tab':
           switchTab(target.dataset.tab || 'chat');

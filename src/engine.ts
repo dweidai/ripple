@@ -36,6 +36,9 @@ import {
   type ThreadMessage,
   type WorkspaceContext,
   type AgentActivityState,
+  type ActiveLock,
+  type AgentInbox,
+  type DialogueHealth,
   VALID_ACTIVITY_STATES,
 } from './types.js';
 
@@ -168,6 +171,13 @@ export class RippleEngine {
       }
     }
 
+    const isHealthyTransition =
+      patch.activityState !== undefined &&
+      patch.activityState !== 'error' &&
+      patch.activityState !== 'quota_exceeded' &&
+      patch.activityState !== 'offline';
+    const clearErrorDetail = isHealthyTransition && sanitizedErrorDetail === undefined;
+
     const now = new Date().toISOString();
     const updated = await this.store.updateTokenByActor(p.wsId, p.actorId, {
       ...(patch.actorName !== undefined ? { actorName: patch.actorName.trim() || p.actorName } : {}),
@@ -175,7 +185,11 @@ export class RippleEngine {
       ...(patch.bio !== undefined ? { bio: patch.bio } : {}),
       ...(patch.avatarColor !== undefined ? { avatarColor: patch.avatarColor } : {}),
       ...(patch.activityState !== undefined ? { activityState: patch.activityState } : {}),
-      ...(sanitizedErrorDetail !== undefined ? { errorDetail: sanitizedErrorDetail } : {}),
+      ...(sanitizedErrorDetail !== undefined
+        ? { errorDetail: sanitizedErrorDetail || undefined }
+        : clearErrorDetail
+          ? { errorDetail: undefined }
+          : {}),
       ...(isOnline !== undefined ? { online: isOnline } : { online: true }),
       lastSeenAt: now,
     });
@@ -188,7 +202,11 @@ export class RippleEngine {
           ...(patch.bio !== undefined ? { bio: patch.bio } : {}),
           ...(patch.avatarColor !== undefined ? { avatarColor: patch.avatarColor } : {}),
           ...(patch.activityState !== undefined ? { activityState: patch.activityState } : {}),
-          ...(sanitizedErrorDetail !== undefined ? { errorDetail: sanitizedErrorDetail } : {}),
+          ...(sanitizedErrorDetail !== undefined
+            ? { errorDetail: sanitizedErrorDetail || undefined }
+            : clearErrorDetail
+              ? { errorDetail: undefined }
+              : {}),
           lastSeenAt: now,
           online: isOnline ?? true,
         };
@@ -1620,7 +1638,7 @@ export class RippleEngine {
       throw Errors.notFound('ThreadMessage', input.replyToId);
     }
     let hopCount = 0;
-    const maxAgentHops = Math.max(1, Number(process.env.RIPPLE_MAX_AGENT_HOPS ?? 25) || 25);
+    const maxAgentHops = this.getMaxAgentHops();
     if (p.kind === 'agent') {
       const prev = existingMsgs[existingMsgs.length - 1];
       hopCount = prev && prev.authorKind === 'agent' ? (prev.hopCount ?? 1) + 1 : 1;
@@ -1751,6 +1769,113 @@ export class RippleEngine {
     return updated;
   }
 
+  getMaxAgentHops(): number {
+    return Math.max(1, Number(process.env.RIPPLE_MAX_AGENT_HOPS ?? 25) || 25);
+  }
+
+  computeDialogueHealth(msgs: ThreadMessage[]): DialogueHealth {
+    const maxAgentHops = this.getMaxAgentHops();
+    const last = msgs[msgs.length - 1];
+    const hopCount = last && last.authorKind === 'agent' ? (last.hopCount ?? 1) : 0;
+    const remainingHops = Math.max(0, maxAgentHops - hopCount);
+    return {
+      hopCount,
+      maxAgentHops,
+      remainingHops,
+      paused: hopCount >= maxAgentHops,
+    };
+  }
+
+  computeActiveLocks(runs: Run[]): ActiveLock[] {
+    return runs
+      .filter((r) => !TERMINAL_RUN_STATUSES.has(r.status))
+      .map((r) => ({
+        runId: r.id,
+        ownerAgent: r.ownerAgent,
+        itemId: r.itemId,
+        title: r.title,
+        touches: [...(r.touches ?? [])],
+        status: r.status,
+        updatedAt: r.updatedAt,
+      }));
+  }
+
+  // ---------- Lightweight Agent Delta Inbox ----------
+  async getInbox(
+    p: Principal,
+    opts?: { sinceId?: string; limit?: number; markRead?: boolean },
+  ): Promise<AgentInbox> {
+    const limit = Math.max(1, Math.min(opts?.limit ?? 15, 50));
+    const [workspaceMsgs, items, allRuns, openCards] = await Promise.all([
+      this.store.listThreadMessages(p.wsId, 'workspace', 'main'),
+      this.store.listItems(p.wsId),
+      this.store.listRuns(p.wsId),
+      this.store.listCards(p.wsId, { status: 'open' }),
+    ]);
+
+    let recentMessages: ThreadMessage[];
+    if (opts?.sinceId) {
+      const idx = workspaceMsgs.findIndex((m) => m.id === opts.sinceId);
+      recentMessages = idx >= 0 ? workspaceMsgs.slice(idx + 1, idx + 1 + limit) : workspaceMsgs.slice(-limit);
+    } else {
+      recentMessages = workspaceMsgs.slice(-limit);
+    }
+
+    const unreadMentions = (opts?.sinceId ? recentMessages : workspaceMsgs).filter((m) => {
+      if (m.actorId === p.actorId) return false;
+      const mentioned = (m.mentions ?? []).includes(p.actorId) || (m.mentions ?? []).includes('all');
+      if (!mentioned) return false;
+      if (opts?.sinceId) return true;
+      return !(m.readBy ?? []).some((r) => r.actorId === p.actorId);
+    });
+
+    if (opts?.markRead !== false && recentMessages.length > 0) {
+      await this.markThreadRead(
+        p,
+        'workspace',
+        'main',
+        recentMessages.map((m) => m.id),
+      );
+    }
+
+    const assignedCards = openCards.filter((c) => {
+      if (c.assignee.kind === 'agent' && c.assignee.id === p.actorId) return true;
+      if (c.assignee.kind === 'user' && (c.assignee.id === p.actorId || p.kind === 'human')) return true;
+      if (c.assignee.kind === 'role' && p.roles.includes(c.assignee.id)) return true;
+      return false;
+    });
+
+    const assignedItems = items.filter(
+      (i) => i.assigneeId === p.actorId && i.status !== 'done' && i.status !== 'dropped',
+    );
+
+    const activeRuns = allRuns.filter((r) => !TERMINAL_RUN_STATUSES.has(r.status));
+    const myActiveRuns = activeRuns.filter((r) => r.ownerAgent === p.actorId);
+    const pendingSteers: Array<{ runId: string; steer: Steer }> = [];
+    for (const r of myActiveRuns) {
+      const steers = await this.store.listSteers(r.id);
+      for (const s of steers) {
+        if (!s.ackedAt) pendingSteers.push({ runId: r.id, steer: s });
+      }
+    }
+
+    const latestMessageId = workspaceMsgs[workspaceMsgs.length - 1]?.id;
+
+    return {
+      workspaceId: p.wsId,
+      whoami: p,
+      dialogueHealth: this.computeDialogueHealth(workspaceMsgs),
+      unreadMentions,
+      recentMessages,
+      assignedCards,
+      assignedItems,
+      pendingSteers,
+      activeLocks: this.computeActiveLocks(activeRuns),
+      latestMessageId,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
   // ---------- Unified Workspace Context ----------
   async getContext(
     p: Principal,
@@ -1813,6 +1938,8 @@ export class RippleEngine {
       subrunTree,
       openCards,
       recentArtifacts: recentArtifacts.slice(0, 25),
+      dialogueHealth: this.computeDialogueHealth(workspaceMsgs),
+      activeLocks: this.computeActiveLocks(activeRuns),
     };
   }
 

@@ -551,6 +551,30 @@ export function createRippleMcpServer(engine: RippleEngine, principal: Principal
     },
   );
 
+  // 20. ripple_inbox
+  server.tool(
+    'ripple_inbox',
+    'Fetch a lightweight, token-efficient delta inbox: unread @mentions, assigned cards/items, pending steers, active resource locks, and dialogueHealth (remainingHops). Prefer this over ripple_get_context for polling loops.',
+    {
+      since_id: z.string().optional(),
+      limit: z.number().int().positive().max(50).optional(),
+      mark_read: z.boolean().optional(),
+    },
+    async ({ since_id, limit, mark_read }) => {
+      try {
+        return ok(
+          await engine.getInbox(principal, {
+            sinceId: since_id,
+            limit,
+            markRead: mark_read,
+          }),
+        );
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
   return server;
 }
 

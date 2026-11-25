@@ -149,7 +149,10 @@
         </div>
 
         <!-- Bottom Pill Input Bar -->
-        <div class="pt-3">
+        <div class="pt-2 space-y-2 relative">
+          <div id="hop-banner" class="hidden rounded-2xl px-3.5 py-2 flex items-center justify-between gap-2 text-xs"></div>
+          <div id="activity-bar" class="hidden flex items-center gap-1.5 overflow-x-auto no-scrollbar px-1"></div>
+          <div id="mention-popover" class="hidden absolute bottom-16 left-2 right-2 z-30 bg-white border border-slate-200 rounded-2xl shadow-lg p-1.5 flex flex-wrap gap-1.5"></div>
           <form id="chat-form" class="relative flex items-center bg-slate-50 border border-slate-200/80 rounded-full px-2.5 py-1.5 shadow-sm hover:border-slate-300 focus-within:border-brand-coral focus-within:ring-2 focus-within:ring-orange-100 transition">
             <button type="button" data-action="insert-tag" data-tag="@agy " title="Mention Antigravity" class="px-2.5 py-1.5 text-xs font-semibold text-slate-500 hover:text-brand-coral hover:bg-orange-50 rounded-full transition">
               @agy
@@ -157,7 +160,7 @@
             <button type="button" data-action="insert-tag" data-tag="@muse " title="Mention Muse" class="px-2.5 py-1.5 text-xs font-semibold text-slate-500 hover:text-brand-coral hover:bg-orange-50 rounded-full transition">
               @muse
             </button>
-            <input id="chat-input" class="flex-1 bg-transparent border-none text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-0 px-3 py-2 min-w-0" placeholder="Message #main, @agy, or @muse..." type="text" autocomplete="off" />
+            <input id="chat-input" class="flex-1 bg-transparent border-none text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-0 px-3 py-2 min-w-0" placeholder="Message #main or type @ to mention..." type="text" autocomplete="off" />
             <button aria-label="Send message" class="w-10 h-10 bg-brand-coral hover:bg-brand-coralHover text-white rounded-full flex items-center justify-center shadow-btn transition flex-shrink-0" type="submit">
               <svg class="w-4 h-4 fill-current transform rotate-45 -mr-0.5" viewBox="0 0 24 24">
                 <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
@@ -247,6 +250,29 @@
         <button type="button" data-action="copy-agent-prompt" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-5 py-2 rounded-full shadow-btn transition">
           <span id="btn-copy-text">Copy Prompt for Agent</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Agent Inspector -->
+  <div id="agent-inspector-modal" class="modal-backdrop fixed inset-0 z-50 bg-slate-900/30 backdrop-blur-sm items-center justify-center p-4">
+    <div class="bg-white rounded-3xl max-w-md w-full shadow-soft border border-neutral-100 overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+        <div class="min-w-0">
+          <h2 id="inspector-name" class="text-base font-bold text-slate-900 truncate">Agent</h2>
+          <p id="inspector-handle" class="text-xs text-slate-400">@agent</p>
+        </div>
+        <button type="button" data-action="close-inspector-modal" class="w-8 h-8 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 flex items-center justify-center transition">✕</button>
+      </div>
+      <div id="inspector-body" class="p-6 space-y-4 text-xs text-slate-600 max-h-[65vh] overflow-y-auto">
+        <!-- Populated dynamically -->
+      </div>
+      <div class="px-6 py-4 bg-slate-50/70 border-t border-slate-100 flex flex-wrap justify-between items-center gap-2">
+        <button type="button" id="inspector-revoke-btn" data-action="inspector-revoke" class="px-3 py-1.5 rounded-full text-xs font-medium text-rose-600 hover:bg-rose-50 transition">Revoke</button>
+        <div class="flex gap-2">
+          <button type="button" id="inspector-tag-btn" data-action="inspector-tag" class="px-3.5 py-1.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 transition">Mention</button>
+          <button type="button" id="inspector-rotate-btn" data-action="inspector-rotate" class="bg-brand-coral hover:bg-brand-coralHover text-white text-xs font-semibold px-4 py-1.5 rounded-full shadow-btn transition">Rotate Token &amp; Copy</button>
+        </div>
       </div>
     </div>
   </div>

@@ -242,6 +242,37 @@ export interface SubrunTreeNode {
   children: SubrunTreeNode[];
 }
 
+export interface DialogueHealth {
+  hopCount: number;
+  maxAgentHops: number;
+  remainingHops: number;
+  paused: boolean;
+}
+
+export interface ActiveLock {
+  runId: string;
+  ownerAgent: string;
+  itemId?: string;
+  title?: string;
+  touches: string[];
+  status: RunStatus;
+  updatedAt: string;
+}
+
+export interface AgentInbox {
+  workspaceId: string;
+  whoami: Principal;
+  dialogueHealth: DialogueHealth;
+  unreadMentions: ThreadMessage[];
+  recentMessages: ThreadMessage[];
+  assignedCards: Card[];
+  assignedItems: Item[];
+  pendingSteers: Array<{ runId: string; steer: Steer }>;
+  activeLocks: ActiveLock[];
+  latestMessageId?: string;
+  serverTime: string;
+}
+
 export interface WorkspaceContext {
   workspaceId: string;
   publicUrl?: string;
@@ -253,6 +284,8 @@ export interface WorkspaceContext {
   subrunTree: SubrunTreeNode[];
   openCards: Card[];
   recentArtifacts: Artifact[];
+  dialogueHealth?: DialogueHealth;
+  activeLocks?: ActiveLock[];
 }
 
 export interface RippleEvent {

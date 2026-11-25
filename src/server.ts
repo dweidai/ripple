@@ -413,6 +413,8 @@ export function createRippleApp(
       ok: true,
       service: 'ripple',
       publicUrl: resolvePublicUrl(c, publicUrl),
+      maxAgentHops: engine.getMaxAgentHops(),
+      commit: (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_SHA || 'local').slice(0, 7),
     }),
   );
 
@@ -1013,6 +1015,17 @@ export function createRippleApp(
   api.post('/status', statusHandler);
   api.patch('/status', statusHandler);
 
+  // Lightweight Agent Delta Inbox endpoint (token-efficient polling)
+  api.get('/inbox', async (c) => {
+    const p = c.get('principal');
+    const sinceId = c.req.query('since_id') || undefined;
+    const limit = c.req.query('limit') ? Number(c.req.query('limit')) : undefined;
+    const markReadParam = c.req.query('mark_read');
+    const markRead = markReadParam === 'false' || markReadParam === '0' ? false : true;
+    const inbox = await engine.getInbox(p, { sinceId, limit, markRead });
+    return c.json(inbox);
+  });
+
   // Structured Multi-Agent Context endpoint
   api.get('/context', async (c) => {
     const p = c.get('principal');
@@ -1089,6 +1102,8 @@ export function createRippleApp(
       messages: workspaceMessages,
       events: events.reverse(),
       agents: tokens.map((t) => recordToPrincipal(t)),
+      dialogueHealth: engine.computeDialogueHealth(workspaceMessages),
+      activeLocks: engine.computeActiveLocks(runs),
     });
   });
 

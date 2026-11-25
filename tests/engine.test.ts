@@ -1106,6 +1106,96 @@ describe('M1 Security Hardening invariants', () => {
       server.close();
     }
   });
+
+  it('supports lightweight delta inbox (REST /api/v1/inbox + MCP ripple_inbox), activeLocks, dialogueHealth, and errorDetail auto-clear', async () => {
+    const { engine, auth, human, agy } = await setup();
+    const server = createRippleHttpServer(engine, auth);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${port}`;
+
+    try {
+      // 1. /healthz exposes maxAgentHops and commit
+      const health = await fetch(`${base}/healthz`).then((r) => r.json());
+      assert.equal(health.ok, true);
+      assert.equal(health.maxAgentHops, 25);
+      assert.ok(typeof health.commit === 'string' && health.commit.length > 0);
+
+      // 2. Create item, claim & plan with touches[] so activeLocks is populated
+      const item = await engine.createItem(human.principal, {
+        title: 'Run Bench 2',
+        assigneeId: 'agy',
+      });
+      const run = await engine.claim(agy.principal, item.id);
+      await engine.plan(agy.principal, run.id, {
+        epoch: 1,
+        steps: [{ title: 'Execute Groq trials' }],
+        touches: ['groq:8k-tpm', 'v1_bench2_ledger.jsonl'],
+      });
+
+      // 3. Human posts a mention to @agy, then @agy replies -> hopCount becomes 1
+      const m1 = await engine.postThreadMessage(human.principal, {
+        scopeKind: 'workspace',
+        scopeId: 'main',
+        body: 'Hey @agy please check bench 2',
+      });
+      const inbox1 = await fetch(`${base}/api/v1/inbox`, {
+        headers: { Authorization: 'Bearer rpl_agy_test' },
+      }).then((r) => r.json());
+      assert.equal(inbox1.unreadMentions.length, 1);
+      assert.equal(inbox1.unreadMentions[0].id, m1.message.id);
+      assert.equal(inbox1.assignedItems.length, 1);
+      assert.equal(inbox1.activeLocks.length, 1);
+      assert.deepEqual(inbox1.activeLocks[0].touches, ['groq:8k-tpm', 'v1_bench2_ledger.jsonl']);
+      assert.equal(inbox1.dialogueHealth.hopCount, 0);
+      assert.equal(inbox1.dialogueHealth.remainingHops, 25);
+
+      // 4. Delta poll with since_id returns 0 new messages until another message arrives
+      const inboxDeltaEmpty = await fetch(`${base}/api/v1/inbox?since_id=${encodeURIComponent(inbox1.latestMessageId)}`, {
+        headers: { Authorization: 'Bearer rpl_agy_test' },
+      }).then((r) => r.json());
+      assert.equal(inboxDeltaEmpty.recentMessages.length, 0);
+
+      // 5. MCP ripple_inbox returns dialogueHealth & activeLocks
+      const mcpRes = await fetch(`${base}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Authorization: 'Bearer rpl_agy_test',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 99,
+          method: 'tools/call',
+          params: {
+            name: 'ripple_inbox',
+            arguments: { since_id: inbox1.latestMessageId },
+          },
+        }),
+      });
+      assert.equal(mcpRes.status, 200);
+      const mcpText = await mcpRes.text();
+      assert.match(mcpText, /dialogueHealth/);
+      assert.match(mcpText, /v1_bench2_ledger\.jsonl/);
+
+      // 6. Auto-clear errorDetail when recovering from quota_exceeded -> working
+      const errState = await engine.updateProfile(agy.principal, {
+        activityState: 'quota_exceeded',
+        errorDetail: 'Groq 429 TPM exceeded',
+      });
+      assert.equal(errState.errorDetail, 'Groq 429 TPM exceeded');
+      const recovered = await engine.updateProfile(agy.principal, {
+        activityState: 'working',
+        statusText: 'Resumed trials',
+      });
+      assert.equal(recovered.activityState, 'working');
+      assert.equal(recovered.errorDetail, undefined);
+      assert.equal(recovered.online, true);
+    } finally {
+      server.close();
+    }
+  });
 });
 
 
