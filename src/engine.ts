@@ -35,6 +35,8 @@ import {
   type SubrunTreeNode,
   type ThreadMessage,
   type WorkspaceContext,
+  type AgentActivityState,
+  VALID_ACTIVITY_STATES,
 } from './types.js';
 
 const VALID_ITEM_STATUSES = new Set<ItemStatus>(['open', 'active', 'done', 'dropped']);
@@ -130,19 +132,52 @@ export class RippleEngine {
   // ---------- Profile & Identity ----------
   async updateProfile(
     p: Principal,
-    patch: { actorName?: string; statusText?: string; bio?: string; avatarColor?: string },
+    patch: {
+      actorName?: string;
+      statusText?: string;
+      bio?: string;
+      avatarColor?: string;
+      activityState?: AgentActivityState;
+      errorDetail?: string;
+      online?: boolean;
+    },
   ): Promise<Principal> {
     if (p.kind !== 'human' && patch.actorName !== undefined && patch.actorName.trim() !== p.actorName) {
       throw Errors.forbidden('Agents may not rename their display name (prevents impersonation)');
     }
+    if (patch.activityState !== undefined && !VALID_ACTIVITY_STATES.has(patch.activityState)) {
+      throw Errors.badRequest(
+        `Invalid activityState '${patch.activityState}'. Must be one of: ${Array.from(VALID_ACTIVITY_STATES).join(', ')}`,
+      );
+    }
+    const sanitizedErrorDetail =
+      patch.errorDetail !== undefined
+        ? redactSensitiveText(String(patch.errorDetail).trim())
+        : undefined;
+
+    let isOnline = patch.online;
+    if (isOnline === undefined) {
+      if (
+        patch.activityState === 'error' ||
+        patch.activityState === 'quota_exceeded' ||
+        patch.activityState === 'offline'
+      ) {
+        isOnline = false;
+      } else if (patch.activityState) {
+        isOnline = true;
+      }
+    }
+
     const now = new Date().toISOString();
     const updated = await this.store.updateTokenByActor(p.wsId, p.actorId, {
       ...(patch.actorName !== undefined ? { actorName: patch.actorName.trim() || p.actorName } : {}),
       ...(patch.statusText !== undefined ? { statusText: patch.statusText } : {}),
       ...(patch.bio !== undefined ? { bio: patch.bio } : {}),
       ...(patch.avatarColor !== undefined ? { avatarColor: patch.avatarColor } : {}),
+      ...(patch.activityState !== undefined ? { activityState: patch.activityState } : {}),
+      ...(sanitizedErrorDetail !== undefined ? { errorDetail: sanitizedErrorDetail } : {}),
+      ...(isOnline !== undefined ? { online: isOnline } : { online: true }),
       lastSeenAt: now,
-      online: true,
     });
     const result: Principal = updated
       ? recordToPrincipal(updated)
@@ -152,12 +187,17 @@ export class RippleEngine {
           ...(patch.statusText !== undefined ? { statusText: patch.statusText } : {}),
           ...(patch.bio !== undefined ? { bio: patch.bio } : {}),
           ...(patch.avatarColor !== undefined ? { avatarColor: patch.avatarColor } : {}),
+          ...(patch.activityState !== undefined ? { activityState: patch.activityState } : {}),
+          ...(sanitizedErrorDetail !== undefined ? { errorDetail: sanitizedErrorDetail } : {}),
           lastSeenAt: now,
-          online: true,
+          online: isOnline ?? true,
         };
     await this.emit(p.wsId, 'principal', p.actorId, 'principal.updated', p.actorId, {
       actorName: result.actorName,
       statusText: result.statusText,
+      activityState: result.activityState,
+      errorDetail: result.errorDetail,
+      online: result.online,
     });
     return result;
   }
@@ -323,6 +363,17 @@ export class RippleEngine {
     item.linkedRunId = run.id;
     item.updatedAt = now;
     await this.store.updateItem(item);
+    if (p.kind === 'agent') {
+      const cur = await this.store.getTokenByActor(p.wsId, p.actorId);
+      if (cur && cur.activityState !== 'error' && cur.activityState !== 'quota_exceeded') {
+        await this.store.updateTokenByActor(p.wsId, p.actorId, {
+          lastSeenAt: now,
+          activityState: 'working',
+          statusText: `Working on: ${item.title}`,
+          online: true,
+        });
+      }
+    }
     await this.emit(p.wsId, 'run', run.id, 'run.claimed', p.actorId, { itemId: item.id, title: item.title }, run.epoch);
     return run;
   }
@@ -1392,7 +1443,9 @@ export class RippleEngine {
     await this.store.updateTokenByActor(p.wsId, run.ownerAgent, {
       lastSeenAt: now,
       statusText: finalStatus === 'done' ? `Completed: ${run.title ?? run.id}` : `Failed: ${run.title ?? run.id}`,
-      online: true,
+      activityState: finalStatus === 'done' ? 'idle' : 'error',
+      ...(finalStatus === 'failed' ? { errorDetail: safeSummary } : {}),
+      online: finalStatus === 'done',
     });
 
     // Update linked item if applicable
@@ -1607,6 +1660,16 @@ export class RippleEngine {
       createdAt: now,
     };
     await this.store.createThreadMessage(msg);
+    if (p.kind === 'agent') {
+      const cur = await this.store.getTokenByActor(p.wsId, p.actorId);
+      if (cur && cur.activityState !== 'error' && cur.activityState !== 'quota_exceeded') {
+        await this.store.updateTokenByActor(p.wsId, p.actorId, {
+          lastSeenAt: now,
+          activityState: 'discussing',
+          online: true,
+        });
+      }
+    }
     await this.emit(p.wsId, 'thread', scopeId, 'thread.message', p.actorId, {
       messageId: msg.id,
       scopeKind,

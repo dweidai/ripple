@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS tokens (
   capabilities TEXT[] NOT NULL DEFAULT '{}',
   last_seen_at TIMESTAMPTZ,
   status_text TEXT,
+  activity_state TEXT,
+  error_detail TEXT,
   online BOOLEAN NOT NULL DEFAULT TRUE,
   expires_at TIMESTAMPTZ,
   revoked_at TIMESTAMPTZ,

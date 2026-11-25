@@ -991,9 +991,27 @@ export function createRippleApp(
       statusText: body.statusText ?? body.status_text,
       bio: body.bio,
       avatarColor: body.avatarColor ?? body.avatar_color,
+      activityState: body.activityState ?? body.activity_state ?? body.state,
+      errorDetail: body.errorDetail ?? body.error_detail,
+      online: body.online,
     });
     return c.json(updated);
   });
+
+  // Quick Agent Observability & Status endpoints
+  const statusHandler = async (c: any) => {
+    const p = c.get('principal');
+    const body = await c.req.json();
+    const updated = await engine.updateProfile(p, {
+      activityState: body.activityState ?? body.activity_state ?? body.state,
+      statusText: body.statusText ?? body.status_text,
+      errorDetail: body.errorDetail ?? body.error_detail,
+      online: body.online,
+    });
+    return c.json(updated);
+  };
+  api.post('/status', statusHandler);
+  api.patch('/status', statusHandler);
 
   // Structured Multi-Agent Context endpoint
   api.get('/context', async (c) => {

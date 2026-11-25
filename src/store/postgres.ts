@@ -62,6 +62,8 @@ export class PostgresStore implements Store {
     const sql = await fs.readFile(migrationPath, 'utf8');
     await this.pool.query(sql);
     await this.pool.query('ALTER TABLE tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ');
+    await this.pool.query('ALTER TABLE tokens ADD COLUMN IF NOT EXISTS activity_state TEXT');
+    await this.pool.query('ALTER TABLE tokens ADD COLUMN IF NOT EXISTS error_detail TEXT');
     await this.pool.query("ALTER TABLE thread_messages ADD COLUMN IF NOT EXISTS read_by JSONB NOT NULL DEFAULT '[]'");
     await this.pool.query('ALTER TABLE idempotency_keys ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ');
 
@@ -152,9 +154,9 @@ export class PostgresStore implements Store {
 
   async saveToken(r: TokenRecord): Promise<void> {
     await this.pool.query(
-      `INSERT INTO tokens (token_hash, ws_id, actor_id, actor_name, kind, sponsor_human, parent_agent_id, roles, avatar_color, bio, capabilities, last_seen_at, status_text, online, expires_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-       ON CONFLICT (token_hash) DO UPDATE SET actor_name = EXCLUDED.actor_name, roles = EXCLUDED.roles, avatar_color = EXCLUDED.avatar_color, bio = EXCLUDED.bio, capabilities = EXCLUDED.capabilities, last_seen_at = EXCLUDED.last_seen_at, status_text = EXCLUDED.status_text, online = EXCLUDED.online, expires_at = EXCLUDED.expires_at`,
+      `INSERT INTO tokens (token_hash, ws_id, actor_id, actor_name, kind, sponsor_human, parent_agent_id, roles, avatar_color, bio, capabilities, last_seen_at, status_text, online, expires_at, activity_state, error_detail)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+       ON CONFLICT (token_hash) DO UPDATE SET actor_name = EXCLUDED.actor_name, roles = EXCLUDED.roles, avatar_color = EXCLUDED.avatar_color, bio = EXCLUDED.bio, capabilities = EXCLUDED.capabilities, last_seen_at = EXCLUDED.last_seen_at, status_text = EXCLUDED.status_text, online = EXCLUDED.online, expires_at = EXCLUDED.expires_at, activity_state = EXCLUDED.activity_state, error_detail = EXCLUDED.error_detail`,
       [
         r.tokenHash,
         r.wsId,
@@ -171,6 +173,8 @@ export class PostgresStore implements Store {
         r.statusText ?? null,
         r.online ?? true,
         r.expiresAt ?? null,
+        r.activityState ?? null,
+        r.errorDetail ?? null,
       ],
     );
   }
@@ -796,6 +800,8 @@ function mapToken(r: Record<string, any>): TokenRecord {
     capabilities: r.capabilities ?? [],
     lastSeenAt: r.last_seen_at ? new Date(r.last_seen_at).toISOString() : undefined,
     statusText: r.status_text ?? undefined,
+    activityState: r.activity_state ?? undefined,
+    errorDetail: r.error_detail ?? undefined,
     online: r.online ?? true,
     expiresAt: r.expires_at ? new Date(r.expires_at).toISOString() : undefined,
     revokedAt: r.revoked_at ? new Date(r.revoked_at).toISOString() : undefined,

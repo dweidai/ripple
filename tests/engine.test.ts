@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
-import { AuthService, generateToken, hashToken } from '../src/auth.js';
+import { AuthService, generateToken, hashToken, recordToPrincipal } from '../src/auth.js';
 import { RippleEngine } from '../src/engine.js';
 import { RippleError } from '../src/errors.js';
 import { createRippleHttpServer } from '../src/server.js';
@@ -1015,6 +1015,95 @@ describe('M1 Security Hardening invariants', () => {
       assert.equal(fileStat.mode & 0o777, 0o600);
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it('supports agent observability states (thinking, working, discussing, idle, error, quota_exceeded, offline) via REST and MCP', async () => {
+    const { engine, auth, agy } = await setup();
+    const server = createRippleHttpServer(engine, auth);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${port}`;
+
+    try {
+      // 1. Agent updates state to thinking via POST /api/v1/status
+      const st1 = await fetch(`${base}/api/v1/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer rpl_agy_test' },
+        body: JSON.stringify({ state: 'thinking', status_text: 'Evaluating Benchmark 2' }),
+      }).then((r) => r.json());
+      assert.equal(st1.activityState, 'thinking');
+      assert.equal(st1.statusText, 'Evaluating Benchmark 2');
+      assert.equal(st1.online, true);
+
+      // 2. Agent reports quota_exceeded with error detail (verifies DLP redaction and online=false)
+      const st2 = await fetch(`${base}/api/v1/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer rpl_agy_test' },
+        body: JSON.stringify({
+          activityState: 'quota_exceeded',
+          errorDetail: 'Groq TPM rate limit reached: 8000 TPM exceeded for openai/gpt-oss-20b',
+        }),
+      }).then((r) => r.json());
+      assert.equal(st2.activityState, 'quota_exceeded');
+      assert.equal(st2.online, false);
+      assert.match(st2.errorDetail, /Groq TPM rate limit reached/);
+
+      // 3. Snapshot includes updated activityState and errorDetail
+      const snap = await fetch(`${base}/api/v1/snapshot`, {
+        headers: { Authorization: 'Bearer rpl_agy_test' },
+      }).then((r) => r.json());
+      const agyAgent = (snap.agents || []).find((a: any) => a.actorId === 'agy');
+      assert.ok(agyAgent);
+      assert.equal(agyAgent.activityState, 'quota_exceeded');
+      assert.equal(agyAgent.online, false);
+
+      // 4. Invalid activityState is rejected with 400
+      const errRes = await fetch(`${base}/api/v1/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer rpl_agy_test' },
+        body: JSON.stringify({ state: 'sleeping' }),
+      });
+      assert.equal(errRes.status, 400);
+
+      // 5. MCP ripple_set_status tool works
+      const mcpRes = await fetch(`${base}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Authorization: 'Bearer rpl_agy_test',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 42,
+          method: 'tools/call',
+          params: {
+            name: 'ripple_set_status',
+            arguments: {
+              state: 'working',
+              status_text: 'Running trial 18/36',
+            },
+          },
+        }),
+      });
+      assert.equal(mcpRes.status, 200);
+      const mcpText = await mcpRes.text();
+      assert.match(mcpText, /working/);
+
+      // 6. Agents unseen for > 5 minutes derive 'offline' state
+      const pastTime = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+      await engine.store.updateTokenByActor(agy.principal.wsId, agy.principal.actorId, {
+        lastSeenAt: pastTime,
+        activityState: 'working',
+      });
+      const tokens = await engine.store.listTokens(agy.principal.wsId);
+      const agyToken = tokens.find((t) => t.actorId === 'agy')!;
+      const derived = recordToPrincipal(agyToken);
+      assert.equal(derived.activityState, 'offline');
+      assert.equal(derived.online, false);
+    } finally {
+      server.close();
     }
   });
 });

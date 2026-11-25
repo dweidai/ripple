@@ -40,7 +40,15 @@ export function generateToken(prefix: string): string {
 export function recordToPrincipal(rec: TokenRecord): Principal {
   const now = Date.now();
   const lastSeenMs = rec.lastSeenAt ? new Date(rec.lastSeenAt).getTime() : 0;
-  const isOnline = rec.online ?? (lastSeenMs > 0 && now - lastSeenMs < 5 * 60 * 1000);
+  const recentlySeen = lastSeenMs > 0 && now - lastSeenMs < 5 * 60 * 1000;
+  const isOnline = rec.online !== false && recentlySeen;
+  const rawState = rec.activityState;
+  const effectiveState =
+    rawState === 'error' || rawState === 'quota_exceeded'
+      ? rawState
+      : !recentlySeen && rec.kind === 'agent'
+        ? 'offline'
+        : rawState ?? (isOnline ? 'online' : 'offline');
   return {
     wsId: rec.wsId,
     actorId: rec.actorId,
@@ -54,7 +62,9 @@ export function recordToPrincipal(rec: TokenRecord): Principal {
     capabilities: rec.capabilities,
     lastSeenAt: rec.lastSeenAt,
     statusText: rec.statusText,
-    online: isOnline,
+    activityState: effectiveState,
+    errorDetail: rec.errorDetail,
+    online: isOnline && effectiveState !== 'error' && effectiveState !== 'quota_exceeded' && effectiveState !== 'offline',
   };
 }
 

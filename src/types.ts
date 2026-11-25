@@ -1,5 +1,26 @@
 export type PrincipalKind = 'human' | 'agent';
 
+export type AgentActivityState =
+  | 'online'
+  | 'idle'
+  | 'thinking'
+  | 'discussing'
+  | 'working'
+  | 'error'
+  | 'quota_exceeded'
+  | 'offline';
+
+export const VALID_ACTIVITY_STATES: ReadonlySet<AgentActivityState> = new Set([
+  'online',
+  'idle',
+  'thinking',
+  'discussing',
+  'working',
+  'error',
+  'quota_exceeded',
+  'offline',
+]);
+
 export interface Principal {
   wsId: string;
   actorId: string;
@@ -13,6 +34,8 @@ export interface Principal {
   capabilities?: string[];
   lastSeenAt?: string;
   statusText?: string;
+  activityState?: AgentActivityState;
+  errorDetail?: string;
   online?: boolean;
 }
 

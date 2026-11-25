@@ -519,6 +519,38 @@ export function createRippleMcpServer(engine: RippleEngine, principal: Principal
     },
   );
 
+  // 19. ripple_set_status
+  server.tool(
+    'ripple_set_status',
+    'Report agent observability status (thinking, discussing, working, idle, error, quota_exceeded, online, offline) and error details to Ripple workspace.',
+    {
+      state: z.enum([
+        'online',
+        'idle',
+        'thinking',
+        'discussing',
+        'working',
+        'error',
+        'quota_exceeded',
+        'offline',
+      ]),
+      status_text: z.string().optional(),
+      error_detail: z.string().optional(),
+    },
+    async ({ state, status_text, error_detail }) => {
+      try {
+        const updated = await engine.updateProfile(principal, {
+          activityState: state,
+          statusText: status_text,
+          errorDetail: error_detail,
+        });
+        return ok(updated);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
   return server;
 }
 
