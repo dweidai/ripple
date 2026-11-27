@@ -668,7 +668,7 @@ Or use MCP tool ripple_set_status.
       return;
     }
     const prefix = match[1].toLowerCase();
-    const agents = (snapshot?.agents || []).filter(a => a.kind === 'agent');
+    const agents = (snapshot?.agents || []).filter(a => a.kind === 'agent' && !isObserverAgent(a));
     const candidates = [
       ...agents.map(a => ({ id: a.actorId, label: a.actorName || a.actorId, state: a.activityState })),
       { id: 'all', label: 'All Agents', state: 'online' }
@@ -686,6 +686,11 @@ Or use MCP tool ripple_set_status.
       </button>
     `).join('');
     pop.classList.remove('hidden');
+  }
+
+  function isObserverAgent(a) {
+    if (!a) return false;
+    return (a.roles || []).includes('observer') || /(?:^|[-_])(observer|cofounder)(?:$|[-_])/i.test(a.actorId || '');
   }
 
   function applyMentionPick(handle) {
@@ -709,23 +714,24 @@ Or use MCP tool ripple_set_status.
     const participants = snapshot.agents || [];
     const human = participants.find(p => p.kind === 'human');
     const agents = participants.filter(p => p.kind === 'agent');
+    const workerAgents = agents.filter(a => !isObserverAgent(a));
     const msgs = snapshot.messages || [];
     const cards = snapshot.cards || [];
     const artifacts = snapshot.artifacts || [];
     const items = snapshot.items || [];
     const runs = snapshot.runs || [];
 
-    // Header presence
-    const onlineAgents = agents.filter(a => a.online && a.activityState !== 'offline' && a.activityState !== 'error' && a.activityState !== 'quota_exceeded');
+    // Header presence (counts active worker agents; observers stay silent)
+    const onlineAgents = workerAgents.filter(a => a.online && a.activityState !== 'offline' && a.activityState !== 'error' && a.activityState !== 'quota_exceeded');
     const presenceEl = document.getElementById('header-presence');
     if (presenceEl) {
-      const downAgents = agents.filter(a => a.activityState === 'error' || a.activityState === 'quota_exceeded');
+      const downAgents = workerAgents.filter(a => a.activityState === 'error' || a.activityState === 'quota_exceeded');
       const downSuffix = downAgents.length > 0 ? ` • ⚠️ ${downAgents.length} down (${downAgents.map(a => '@' + a.actorId).join(', ')})` : '';
-      presenceEl.textContent = `${human?.actorName || 'David'} • ${onlineAgents.length}/${agents.length} AI agent${agents.length === 1 ? '' : 's'} online${downSuffix}`;
+      presenceEl.textContent = `${human?.actorName || 'David'} • ${onlineAgents.length}/${workerAgents.length} AI agent${workerAgents.length === 1 ? '' : 's'} online${downSuffix}`;
     }
     const countEl = document.getElementById('sidebar-agent-count');
     if (countEl) {
-      countEl.textContent = `${onlineAgents.length}/${agents.length} online`;
+      countEl.textContent = `${onlineAgents.length}/${workerAgents.length} online`;
     }
 
     // Sidebar Roster
@@ -1024,24 +1030,46 @@ Or use MCP tool ripple_set_status.
       }
     });
 
-    // Backlog List
+    // Backlog List (active & open first, sorted by priority, with Completed section below)
     const filteredItems = query ? items.filter(i => (i.title + ' ' + (i.body || '')).toLowerCase().includes(query)) : items;
-    const taskListEl = document.getElementById('task-list');
-    if (taskListEl) {
-      taskListEl.innerHTML = filteredItems.map(item => `
+    const statusRank = { active: 0, open: 1, done: 2, dropped: 3 };
+    const prioRank = p => {
+      const m = String(p || 'P2').match(/(\d+)/);
+      return m ? Number(m[1]) : 9;
+    };
+    const sortedItems = [...filteredItems].sort((a, b) => {
+      const sr = (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9);
+      if (sr !== 0) return sr;
+      return prioRank(a.priority) - prioRank(b.priority);
+    });
+    const activeItems = sortedItems.filter(i => i.status !== 'done' && i.status !== 'dropped');
+    const completedItems = sortedItems.filter(i => i.status === 'done' || i.status === 'dropped');
+    const renderItemCard = item => {
+      const resHref = safeHref(item.resultUrl);
+      return `
         <div class="p-3.5 rounded-2xl bg-slate-50/70 hover:bg-slate-50 border border-slate-100 flex items-start gap-3 transition">
           <input type="checkbox" ${item.status === 'done' ? 'checked' : ''} data-action="toggle-task" data-item-id="${esc(item.id)}" class="mt-1 rounded text-brand-coral focus:ring-orange-200 border-slate-300 cursor-pointer" />
           <div class="flex-1 min-w-0">
             <div class="text-sm font-medium text-slate-800 ${item.status === 'done' ? 'line-through text-slate-400' : ''}">${esc(item.title)}</div>
-            ${item.body ? `<p class="text-xs text-slate-500 mt-0.5">${esc(item.body)}</p>` : ''}
-            <div class="flex flex-wrap gap-1.5 mt-2">
+            ${item.body ? `<p class="text-xs text-slate-500 mt-0.5 break-words">${formatMessageBody(item.body)}</p>` : ''}
+            <div class="flex flex-wrap items-center gap-1.5 mt-2">
               <span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600">${esc(item.priority)}</span>
               <span class="text-[10px] font-medium px-2 py-0.5 rounded-full ${item.status === 'done' ? 'bg-emerald-50 text-emerald-700' : 'bg-orange-50 text-brand-coral'}">${esc(item.status)}</span>
               ${item.assigneeId ? `<span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-500">@${esc(item.assigneeId)}</span>` : ''}
+              ${resHref ? `<a href="${esc(resHref)}" target="_blank" rel="noopener noreferrer" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-orange-50 text-brand-coral hover:underline">Result ↗</a>` : ''}
             </div>
           </div>
         </div>
-      `).join('') || `<div class="text-center text-xs text-slate-400 py-10">No tasks in backlog.</div>`;
+      `;
+    };
+    const taskListEl = document.getElementById('task-list');
+    if (taskListEl) {
+      let html = activeItems.map(renderItemCard).join('');
+      if (completedItems.length > 0) {
+        html += `<div class="pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Completed (${completedItems.length})</div>`;
+        html += completedItems.map(renderItemCard).join('');
+      }
+      taskListEl.innerHTML = html || `<div class="text-center text-xs text-slate-400 py-10">No tasks in backlog.</div>`;
     }
 
     // Decisions & Runs List
