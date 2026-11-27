@@ -1581,7 +1581,10 @@ export class RippleEngine {
       const tokens = await this.store.listTokens(p.wsId);
       const expanded = new Set<string>(mentions);
       for (const t of tokens) {
-        if (t.kind === 'agent' && t.actorId !== p.actorId) {
+        const isObserver =
+          (t.roles ?? []).includes('observer') ||
+          /(?:^|[-_])(observer|cofounder)(?:$|[-_])/i.test(t.actorId);
+        if (t.kind === 'agent' && t.actorId !== p.actorId && !isObserver) {
           expanded.add(t.actorId);
         }
       }
@@ -1866,7 +1869,7 @@ export class RippleEngine {
 
   computeActiveLocks(runs: Run[]): ActiveLock[] {
     return runs
-      .filter((r) => !TERMINAL_RUN_STATUSES.has(r.status))
+      .filter((r) => !TERMINAL_RUN_STATUSES.has(r.status) && r.status !== 'stalled')
       .map((r) => ({
         runId: r.id,
         ownerAgent: r.ownerAgent,

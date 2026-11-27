@@ -519,7 +519,10 @@ Or use MCP tool ripple_set_status.
       return `\u0000BLK${idx}\u0000`;
     });
 
-    // 3. Bold **text**
+    // 3. Markdown headings (## / ###)
+    html = html.replace(/^#{2,3}\s+(.+)$/gm, '<div class="font-bold text-slate-900 mt-2 mb-0.5">$1</div>');
+
+    // 4. Bold **text**
     html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong class="font-semibold text-slate-900">$1</strong>');
 
     // 4. Clickable https/http links
