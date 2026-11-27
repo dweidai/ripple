@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +18,7 @@ const PROJECT_ROOT = __dirname.includes('dist-test')
   ? path.resolve(__dirname, '../..')
   : path.resolve(__dirname, '..');
 const CLI_PATH = path.resolve(PROJECT_ROOT, 'src/cli.ts');
-const SCRATCH_DIR = '/home/antigravity/.gemini/jetski/scratch/teamwork_tmp/c7a22f7d0b01ef92a18e2232a5d9152a';
+const SCRATCH_DIR = path.join(os.tmpdir(), 'ripple-e2e-scratch');
 
 interface ApiResult<T = any> {
   status: number;

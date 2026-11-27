@@ -428,11 +428,9 @@ describe('RippleEngine core invariants', () => {
 
   it('supports self-service agent invites, doorway markdown guide, and file-backed MemoryStore persistence', async () => {
     const fs = await import('node:fs/promises');
+    const os = await import('node:os');
     const path = await import('node:path');
-    const tmpFile = path.resolve(
-      '/home/antigravity/.gemini/jetski/scratch/teamwork_tmp/f61cd444cd24e10d1755b65be5f1559b',
-      `state-${Date.now()}.json`,
-    );
+    const tmpFile = path.join(os.tmpdir(), `ripple-state-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
 
     const store1 = new MemoryStore(tmpFile);
     await store1.init();
@@ -1011,10 +1009,8 @@ describe('M1 Security Hardening invariants', () => {
     );
 
     // M5: MemoryStore file permissions (0o700 dir, 0o600 file)
-    const tmpDir = path.resolve(
-      '/home/antigravity/.gemini/jetski/scratch/teamwork_tmp/5bb8d2190f6ed01aaa8131cb419b05f7',
-      `perm-test-${Date.now()}`,
-    );
+    const os = await import('node:os');
+    const tmpDir = path.join(os.tmpdir(), `ripple-perm-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     const stateFile = path.join(tmpDir, 'state.json');
     try {
       const fileStore = new MemoryStore(stateFile);

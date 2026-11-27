@@ -58,8 +58,23 @@ export class PostgresStore implements Store {
 
   async init(): Promise<void> {
     const dir = path.dirname(fileURLToPath(import.meta.url));
-    const migrationPath = path.resolve(dir, '../../db/migrations/001_init.sql');
-    const sql = await fs.readFile(migrationPath, 'utf8');
+    const candidates = [
+      path.resolve(dir, '../../db/migrations/001_init.sql'),
+      path.resolve(dir, '../../../db/migrations/001_init.sql'),
+      path.resolve(process.cwd(), 'db/migrations/001_init.sql'),
+    ];
+    let sql: string | undefined;
+    for (const p of candidates) {
+      try {
+        sql = await fs.readFile(p, 'utf8');
+        break;
+      } catch {
+        // try next candidate
+      }
+    }
+    if (!sql) {
+      throw new Error(`Could not locate db/migrations/001_init.sql (tried: ${candidates.join(', ')})`);
+    }
     await this.pool.query(sql);
     await this.pool.query('ALTER TABLE tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ');
     await this.pool.query('ALTER TABLE tokens ADD COLUMN IF NOT EXISTS activity_state TEXT');
