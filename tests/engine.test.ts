@@ -383,8 +383,8 @@ describe('RippleEngine core invariants', () => {
     assert.deepEqual(m0.message.mentions, ['agy', 'muse']);
     assert.equal(m0.message.hopCount, 0);
 
-    // 25 consecutive agent replies succeed, 26th without human input is blocked by anti-loop guard
-    for (let i = 1; i <= 25; i++) {
+    // 20 rapid-fire consecutive agent turns in 60s succeed, 21st triggers self-healing 429 burst guard
+    for (let i = 1; i <= 20; i++) {
       const sender = i % 2 === 1 ? agy.principal : grok.principal;
       const res = await engine.postThreadMessage(sender, {
         scopeKind: 'workspace',
@@ -399,18 +399,31 @@ describe('RippleEngine core invariants', () => {
         engine.postThreadMessage(agy.principal, {
           scopeKind: 'workspace',
           scopeId: 'main',
-          body: '@grok turn 26 runaway loop',
+          body: '@grok turn 21 rapid burst',
         }),
-      (err: unknown) => err instanceof RippleError && err.code === 'bad_request' && err.status === 400,
+      (err: unknown) => err instanceof RippleError && err.code === 'rate_limited' && err.status === 429,
     );
 
-    // Human message resets hopCount back to 0
+    // Human message resets hopCount and burst window back to 0
     const resetMsg = await engine.postThreadMessage(human.principal, {
       scopeKind: 'workspace',
       scopeId: 'main',
       body: 'Human check-in resets hopCount',
     });
     assert.equal(resetMsg.message.hopCount, 0);
+
+    // Duplicate-loop guard: 3rd identical message from same agent within 2m is rejected with 429
+    await engine.postThreadMessage(agy.principal, { scopeKind: 'workspace', scopeId: 'main', body: 'Same stuck retry' });
+    await engine.postThreadMessage(agy.principal, { scopeKind: 'workspace', scopeId: 'main', body: 'Same stuck retry' });
+    await assert.rejects(
+      () =>
+        engine.postThreadMessage(agy.principal, {
+          scopeKind: 'workspace',
+          scopeId: 'main',
+          body: 'Same stuck retry',
+        }),
+      (err: unknown) => err instanceof RippleError && err.code === 'rate_limited' && err.status === 429,
+    );
   });
 
   it('supports self-service agent invites, doorway markdown guide, and file-backed MemoryStore persistence', async () => {
@@ -1115,10 +1128,11 @@ describe('M1 Security Hardening invariants', () => {
     const base = `http://127.0.0.1:${port}`;
 
     try {
-      // 1. /healthz exposes maxAgentHops and commit
+      // 1. /healthz exposes maxAgentHops (null = unlimited), agentBurstLimit, and commit
       const health = await fetch(`${base}/healthz`).then((r) => r.json());
       assert.equal(health.ok, true);
-      assert.equal(health.maxAgentHops, 25);
+      assert.equal(health.maxAgentHops, null);
+      assert.equal(health.agentBurstLimit, 20);
       assert.ok(typeof health.commit === 'string' && health.commit.length > 0);
 
       // 2. Create item, claim & plan with touches[] so activeLocks is populated
@@ -1148,7 +1162,8 @@ describe('M1 Security Hardening invariants', () => {
       assert.equal(inbox1.activeLocks.length, 1);
       assert.deepEqual(inbox1.activeLocks[0].touches, ['groq:8k-tpm', 'v1_bench2_ledger.jsonl']);
       assert.equal(inbox1.dialogueHealth.hopCount, 0);
-      assert.equal(inbox1.dialogueHealth.remainingHops, 25);
+      assert.equal(inbox1.dialogueHealth.maxAgentHops, null);
+      assert.equal(inbox1.dialogueHealth.burstLimit, 20);
 
       // 4. Delta poll with since_id returns 0 new messages until another message arrives
       const inboxDeltaEmpty = await fetch(`${base}/api/v1/inbox?since_id=${encodeURIComponent(inbox1.latestMessageId)}`, {

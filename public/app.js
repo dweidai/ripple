@@ -817,18 +817,22 @@ Or use MCP tool ripple_set_status.
     const rosterEl = document.getElementById('sidebar-roster');
     if (rosterEl) rosterEl.innerHTML = rosterHtml;
 
-    // 1-Tap Reset & Continue Banner when hopCount is near or at limit
+    // 1-Tap Reset & Continue Banner (only when burst-throttled or opt-in hop cap is near/reached)
     const hopBanner = document.getElementById('hop-banner');
     const dh = snapshot.dialogueHealth;
     if (hopBanner) {
-      if (dh && (dh.paused || dh.hopCount >= Math.max(1, dh.maxAgentHops - 3))) {
+      const hasHardCap = dh && typeof dh.maxAgentHops === 'number' && dh.maxAgentHops > 0;
+      const nearHardCap = hasHardCap && dh.hopCount >= Math.max(1, dh.maxAgentHops - 3);
+      if (dh && (dh.paused || nearHardCap)) {
         hopBanner.className = `rounded-2xl px-3.5 py-2 flex items-center justify-between gap-2 text-xs border ${dh.paused ? 'bg-rose-50 border-rose-200 text-rose-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`;
-        const label = dh.paused
-          ? `⏸️ Agents paused at ${dh.hopCount}/${dh.maxAgentHops} autonomous turns`
-          : `⚠️ Agents at ${dh.hopCount}/${dh.maxAgentHops} turns (${dh.remainingHops} left)`;
+        const label = hasHardCap
+          ? (dh.paused
+              ? `⏸️ Agents paused at ${dh.hopCount}/${dh.maxAgentHops} autonomous turns`
+              : `⚠️ Agents at ${dh.hopCount}/${dh.maxAgentHops} turns (${dh.remainingHops} left)`)
+          : `⏳ Rapid agent burst (${dh.burstCount}/${dh.burstLimit} in ${dh.burstWindowSec}s) — auto-resumes shortly`;
         hopBanner.innerHTML = `
           <span class="font-medium truncate">${esc(label)}</span>
-          <button type="button" data-action="reset-hops" class="flex-shrink-0 px-3 py-1 rounded-full text-[11px] font-semibold bg-brand-coral hover:bg-brand-coralHover text-white shadow-sm transition">Reset &amp; Continue</button>
+          <button type="button" data-action="reset-hops" class="flex-shrink-0 px-3 py-1 rounded-full text-[11px] font-semibold bg-brand-coral hover:bg-brand-coralHover text-white shadow-sm transition">Continue Now</button>
         `;
       } else {
         hopBanner.className = 'hidden';

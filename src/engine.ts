@@ -1642,9 +1642,50 @@ export class RippleEngine {
     if (p.kind === 'agent') {
       const prev = existingMsgs[existingMsgs.length - 1];
       hopCount = prev && prev.authorKind === 'agent' ? (prev.hopCount ?? 1) + 1 : 1;
-      if (hopCount > maxAgentHops) {
+
+      // Optional hard cap only when RIPPLE_MAX_AGENT_HOPS is explicitly configured (> 0)
+      if (maxAgentHops !== null && hopCount > maxAgentHops) {
         throw Errors.badRequest(
           `Anti-loop guard triggered: hopCount (${hopCount}) exceeds max consecutive agent turns (${maxAgentHops}) without human input.`,
+        );
+      }
+
+      // Self-healing sliding-window burst guard: stops rapid-fire ping-pong without ever permanently locking out async teams
+      const nowMs = Date.now();
+      const { limit: burstLimit, windowMs } = this.getAgentBurstConfig();
+      const recentBurst: ThreadMessage[] = [];
+      for (let i = existingMsgs.length - 1; i >= 0; i--) {
+        const m = existingMsgs[i];
+        if (m.authorKind !== 'agent') break;
+        const msgMs = new Date(m.createdAt).getTime();
+        if (nowMs - msgMs > windowMs) break;
+        recentBurst.push(m);
+      }
+      if (recentBurst.length >= burstLimit) {
+        const oldestMs = new Date(recentBurst[recentBurst.length - 1].createdAt).getTime();
+        const retryAfterSec = Math.max(1, Math.ceil((oldestMs + windowMs - nowMs) / 1000));
+        throw Errors.rateLimited(
+          `Agent burst guard: ${recentBurst.length} consecutive agent messages in the last ${Math.round(windowMs / 1000)}s (limit ${burstLimit}). Automatically resumes in ${retryAfterSec}s — no human reset required.`,
+          retryAfterSec,
+        );
+      }
+
+      // Duplicate-loop guard: catches buggy retry loops posting identical content >= 3x in 2 minutes
+      const normalizedBody = body.trim().toLowerCase();
+      const dupWindowMs = 2 * 60 * 1000;
+      let dupCount = 0;
+      for (let i = existingMsgs.length - 1; i >= 0; i--) {
+        const m = existingMsgs[i];
+        const msgMs = new Date(m.createdAt).getTime();
+        if (nowMs - msgMs > dupWindowMs) break;
+        if (m.actorId === p.actorId && m.body.trim().toLowerCase() === normalizedBody) {
+          dupCount += 1;
+        }
+      }
+      if (dupCount >= 2) {
+        throw Errors.rateLimited(
+          `Duplicate message loop detected for @${p.actorId}: identical message posted repeatedly within 2 minutes. Wait 30s or send a distinct update.`,
+          30,
         );
       }
     }
@@ -1769,20 +1810,41 @@ export class RippleEngine {
     return updated;
   }
 
-  getMaxAgentHops(): number {
-    return Math.max(1, Number(process.env.RIPPLE_MAX_AGENT_HOPS ?? 25) || 25);
+  getMaxAgentHops(): number | null {
+    const raw = process.env.RIPPLE_MAX_AGENT_HOPS;
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+  }
+
+  getAgentBurstConfig(): { limit: number; windowMs: number } {
+    const limit = Math.max(5, Number(process.env.RIPPLE_AGENT_BURST_LIMIT ?? 20) || 20);
+    const windowMs = Math.max(5_000, Number(process.env.RIPPLE_AGENT_BURST_WINDOW_MS ?? 60_000) || 60_000);
+    return { limit, windowMs };
   }
 
   computeDialogueHealth(msgs: ThreadMessage[]): DialogueHealth {
     const maxAgentHops = this.getMaxAgentHops();
+    const { limit: burstLimit, windowMs } = this.getAgentBurstConfig();
     const last = msgs[msgs.length - 1];
     const hopCount = last && last.authorKind === 'agent' ? (last.hopCount ?? 1) : 0;
-    const remainingHops = Math.max(0, maxAgentHops - hopCount);
+    const remainingHops = maxAgentHops !== null ? Math.max(0, maxAgentHops - hopCount) : null;
+    const nowMs = Date.now();
+    let burstCount = 0;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.authorKind !== 'agent') break;
+      if (nowMs - new Date(m.createdAt).getTime() > windowMs) break;
+      burstCount += 1;
+    }
     return {
       hopCount,
       maxAgentHops,
       remainingHops,
-      paused: hopCount >= maxAgentHops,
+      burstCount,
+      burstLimit,
+      burstWindowSec: Math.round(windowMs / 1000),
+      paused: (maxAgentHops !== null && hopCount >= maxAgentHops) || burstCount >= burstLimit,
     };
   }
 

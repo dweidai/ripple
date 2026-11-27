@@ -244,8 +244,11 @@ export interface SubrunTreeNode {
 
 export interface DialogueHealth {
   hopCount: number;
-  maxAgentHops: number;
-  remainingHops: number;
+  maxAgentHops: number | null;
+  remainingHops: number | null;
+  burstCount: number;
+  burstLimit: number;
+  burstWindowSec: number;
   paused: boolean;
 }
 

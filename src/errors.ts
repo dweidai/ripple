@@ -73,4 +73,12 @@ export const Errors = {
 
   badRequest: (msg: string) =>
     new RippleError('bad_request', 400, msg),
+
+  rateLimited: (msg: string, retryAfterSec?: number) =>
+    new RippleError(
+      'rate_limited',
+      429,
+      msg,
+      retryAfterSec !== undefined ? { retry_after_sec: retryAfterSec } : {},
+    ),
 };

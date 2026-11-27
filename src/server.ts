@@ -401,6 +401,9 @@ export function createRippleApp(
 
   app.onError((err, c) => {
     if (err instanceof RippleError) {
+      if (typeof err.extra?.retry_after_sec === 'number') {
+        c.header('Retry-After', String(err.extra.retry_after_sec));
+      }
       return c.json(err.toJSON(), err.status as any);
     }
     console.error('[ripple] unhandled error:', err);
@@ -408,15 +411,18 @@ export function createRippleApp(
   });
 
   // Health check
-  app.get('/healthz', (c) =>
-    c.json({
+  app.get('/healthz', (c) => {
+    const burst = engine.getAgentBurstConfig();
+    return c.json({
       ok: true,
       service: 'ripple',
       publicUrl: resolvePublicUrl(c, publicUrl),
       maxAgentHops: engine.getMaxAgentHops(),
+      agentBurstLimit: burst.limit,
+      agentBurstWindowSec: Math.round(burst.windowMs / 1000),
       commit: (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_SHA || 'local').slice(0, 7),
-    }),
-  );
+    });
+  });
 
   // Doorway URL for any agent harness (unauthenticated overview or authenticated whoami)
   app.get('/bootstrap', async (c) => {
