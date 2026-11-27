@@ -165,7 +165,8 @@ export class AuthService {
     const nowMs = Date.now();
     const now = new Date(nowMs).toISOString();
     rec.lastSeenAt = now;
-    rec.online = true;
+    const isErrored = rec.activityState === 'error' || rec.activityState === 'quota_exceeded';
+    rec.online = !isErrored;
 
     const presenceKey = `${rec.wsId}:${rec.actorId}`;
     const lastWrite = this.lastPresenceWrite.get(presenceKey) ?? 0;
@@ -173,7 +174,7 @@ export class AuthService {
       this.lastPresenceWrite.set(presenceKey, nowMs);
       await this.store.updateTokenByActor(rec.wsId, rec.actorId, {
         lastSeenAt: now,
-        online: true,
+        online: !isErrored,
       });
     }
     return recordToPrincipal(rec);

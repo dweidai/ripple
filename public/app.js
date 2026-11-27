@@ -19,6 +19,7 @@
   let sseReconnectTimer = null;
   let toastTimer = null;
   let lastRenderSig = '';
+  let lastRenderedMsgCount = 0;
 
   const AGENTS_META = {
     agy: { actorId: 'agy', name: 'Antigravity (@agy)' },
@@ -289,8 +290,9 @@ Or use MCP tool ripple_set_status.
     const input = document.getElementById('chat-input');
     if (!input) return;
     input.value += tag;
-    input.focus();
     if (currentTab !== 'chat') switchTab('chat');
+    toggleMobileSidebar(false);
+    input.focus();
   }
 
   async function api(method, path, body) {
@@ -984,8 +986,16 @@ Or use MCP tool ripple_set_status.
 
     const chatEl = document.getElementById('chat-stream');
     if (chatEl) {
+      const prevScrollTop = chatEl.scrollTop;
+      const wasAtBottom = lastRenderedMsgCount === 0 || (chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 90);
+      const hasNewMessages = msgs.length > lastRenderedMsgCount;
       chatEl.innerHTML = chatHtml;
-      chatEl.scrollTop = chatEl.scrollHeight;
+      if (wasAtBottom || hasNewMessages) {
+        chatEl.scrollTop = chatEl.scrollHeight;
+      } else {
+        chatEl.scrollTop = prevScrollTop;
+      }
+      lastRenderedMsgCount = msgs.length;
     }
 
     // Badges

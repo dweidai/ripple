@@ -1721,7 +1721,13 @@ export class RippleEngine {
     await this.store.createThreadMessage(msg);
     if (p.kind === 'agent') {
       const cur = await this.store.getTokenByActor(p.wsId, p.actorId);
-      if (cur && cur.activityState !== 'error' && cur.activityState !== 'quota_exceeded') {
+      if (
+        cur &&
+        (!cur.activityState ||
+          cur.activityState === 'online' ||
+          cur.activityState === 'idle' ||
+          cur.activityState === 'offline')
+      ) {
         await this.store.updateTokenByActor(p.wsId, p.actorId, {
           lastSeenAt: now,
           activityState: 'discussing',
