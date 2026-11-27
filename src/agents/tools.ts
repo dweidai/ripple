@@ -1,14 +1,18 @@
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { Errors } from '../errors.js';
 
 const execFileAsync = promisify(execFile);
 
-const GH_BIN = '/opt/antigravity/bin/gh';
-const GDRIVE_BIN = '/opt/antigravity/bin/gdrive';
-const GDOCS_BIN = '/opt/antigravity/bin/gdocs';
+const resolveBin = (preferred: string, fallback: string): string =>
+  fs.existsSync(preferred) ? preferred : fallback;
+
+const GH_BIN = resolveBin('/opt/antigravity/bin/gh', 'gh');
+const GDRIVE_BIN = resolveBin('/opt/antigravity/bin/gdrive', 'gdrive');
+const GDOCS_BIN = resolveBin('/opt/antigravity/bin/gdocs', 'gdocs');
 const DEFAULT_REPO = process.env.RIPPLE_GITHUB_REPO ?? 'dweidai/ripple';
 const CLI_TIMEOUT_MS = 30_000;
 const MAX_SECTIONS = 20;
@@ -119,6 +123,8 @@ export function getPluginEnv(service: PluginService): NodeJS.ProcessEnv {
   }
   if (service === 'gh') {
     env.GITHUB_TOKEN_FILE = process.env.GITHUB_TOKEN_FILE ?? '/opt/antigravity/tokens/github/token.json';
+    if (process.env.GH_TOKEN) env.GH_TOKEN = process.env.GH_TOKEN;
+    if (process.env.GITHUB_TOKEN) env.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
   } else if (service === 'gdrive') {
     env.GDRIVE_TOKEN_FILE = process.env.GDRIVE_TOKEN_FILE ?? '/opt/antigravity/tokens/gdrive/token.json';
   } else if (service === 'gdocs') {
