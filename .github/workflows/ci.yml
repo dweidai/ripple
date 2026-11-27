@@ -1,0 +1,66 @@
+name: Ripple CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ripple
+          POSTGRES_PASSWORD: ripple_ci_password
+          POSTGRES_DB: ripple_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U ripple -d ripple_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build CSS & TypeScript
+        run: |
+          npm run build:css
+          npm run build
+
+      - name: UI Static Audit (syntax, checkJs undefineds, DOM IDs, data-actions, strict CSP)
+        run: npm run test:static
+
+      - name: Unit, OAuth & Live Postgres Integration Tests
+        env:
+          TEST_DATABASE_URL: postgres://ripple:ripple_ci_password@127.0.0.1:5432/ripple_test
+        run: npm test
+
+      - name: Full HTTP, MCP & SSE E2E Tests
+        run: npm run test:e2e
+
+      - name: Setup Python & Playwright Chromium
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Playwright & Chromium
+        run: |
+          pip install playwright
+          playwright install chromium --with-deps
+
+      - name: Headless Chromium Desktop + Mobile UI & SSE E2E Tests
+        run: npm run test:ui

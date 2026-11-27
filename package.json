@@ -11,7 +11,11 @@
     "start": "node dist/index.js",
     "build": "tsc",
     "build:css": "tailwindcss -i public/input.css -o public/styles.css --minify",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/tests/engine.test.js",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/tests/engine.test.js dist-test/tests/oauth.test.js dist-test/tests/postgres.test.js",
+    "test:static": "node scripts/check-ui-static.mjs",
+    "test:e2e": "tsc -p tsconfig.test.json && node --test dist-test/tests/e2e.test.js",
+    "test:ui": "python3 tests/ui_e2e.py",
+    "test:all": "npm run build && npm run test:static && npm test && npm run test:e2e && npm run test:ui",
     "cli": "tsx src/cli.ts"
   },
   "dependencies": {
