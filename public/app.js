@@ -519,7 +519,7 @@ Or use MCP tool ripple_set_status.
     html = html.replace(/\b(https?:\/\/[^\s<>"']+)/g, (match) => {
       const trimmed = match.replace(/[.,;:!?)]+$/, '');
       const trailing = match.slice(trimmed.length);
-      const safe = safeHttpUrl(trimmed.replace(/&amp;/g, '&'));
+      const safe = safeHref(trimmed.replace(/&amp;/g, '&'));
       if (!safe) return match;
       return `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer" class="text-brand-coral underline hover:opacity-80 break-all">${trimmed}</a>${trailing}`;
     });
