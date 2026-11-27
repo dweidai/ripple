@@ -1576,7 +1576,17 @@ export class RippleEngine {
     const scopeKind = input.scopeKind ?? 'workspace';
     const scopeId = input.scopeId ?? 'main';
     const body = redactSensitiveText(String(input.body).trim());
-    const mentions = extractMentions(body);
+    let mentions = extractMentions(body);
+    if (mentions.includes('all')) {
+      const tokens = await this.store.listTokens(p.wsId);
+      const expanded = new Set<string>(mentions);
+      for (const t of tokens) {
+        if (t.kind === 'agent' && t.actorId !== p.actorId) {
+          expanded.add(t.actorId);
+        }
+      }
+      mentions = [...expanded];
+    }
 
     // M2 + PII isolation: verify scopeId belongs to p.wsId and enforce run ownership on run-scoped threads
     if (scopeKind === 'run') {

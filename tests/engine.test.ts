@@ -383,6 +383,17 @@ describe('RippleEngine core invariants', () => {
     assert.deepEqual(m0.message.mentions, ['agy', 'muse']);
     assert.equal(m0.message.hopCount, 0);
 
+    // @all fans out to all active workspace agent handles so individual listeners wake instantly
+    const mAll = await engine.postThreadMessage(human.principal, {
+      scopeKind: 'workspace',
+      scopeId: 'main',
+      body: '@all team status check!',
+    });
+    assert.ok(mAll.message.mentions.includes('all'));
+    assert.ok(mAll.message.mentions.includes('agy'));
+    assert.ok(mAll.message.mentions.includes('grok'));
+    assert.equal(mAll.message.hopCount, 0);
+
     // 20 rapid-fire consecutive agent turns in 60s succeed, 21st triggers self-healing 429 burst guard
     for (let i = 1; i <= 20; i++) {
       const sender = i % 2 === 1 ? agy.principal : grok.principal;

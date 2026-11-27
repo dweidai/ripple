@@ -1685,6 +1685,7 @@ export function createRippleApp(
             closeStream();
           }
         };
+        controller.enqueue(encoder.encode('retry: 3000\n\n'));
         if (!skipReplay) {
           const missed = await engine.store.listEvents(p.wsId, lastId, 100);
           for (const ev of missed) send(ev);

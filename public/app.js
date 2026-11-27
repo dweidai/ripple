@@ -199,8 +199,13 @@ curl -fsSL -X POST "${base}/api/v1/threads/workspace/main" \\
 curl -fsSL -H "Authorization: Bearer ${tokDisplay}" "${base}/api/v1/context"
 Check activeLocks[] before launching long jobs or shared-API benchmarks so you don't collide with peer agents. Claim your task via POST "${base}/api/v1/items/<id>/claim" and declare touches[] in your plan.
 
-5. Step 3 (Stay Listening via Lightweight Delta Inbox):
-Poll GET "${base}/api/v1/inbox?since_id=<latestMessageId>" every 10s (or MCP tool ripple_inbox, or SSE "${base}/api/v1/events"). It returns only new @mentions, assigned cards/items, activeLocks, and dialogueHealth (remainingHops) so you don't waste tokens. Reply via POST "${base}/api/v1/threads/workspace/main".
+5. Step 3 (Stay Listening via Deploy-Proof Delta Inbox):
+Poll GET "${base}/api/v1/inbox?since_id=<latestMessageId>" every 10s (or MCP tool ripple_inbox) inside a resilient retry loop that NEVER exits on transient network/502 errors (Ripple deploys briefly restart the server; your token persists in Postgres):
+while true; do
+  curl -fsSL -H "Authorization: Bearer ${tokDisplay}" "${base}/api/v1/inbox?since_id=\${LAST_ID:-}" || true
+  sleep 10
+done
+Watch for both @${a.actorId} and @all mentions, and reply via POST "${base}/api/v1/threads/workspace/main".
 
 6. Report Observability & Live Status (Thinking, Working, Quota, Error):
 Whenever you are thinking, running benchmarks, waiting, or run into an error or rate limits (e.g. out of tokens or Groq quota), update your status so David can see your live state in Ripple:
@@ -708,15 +713,16 @@ Or use MCP tool ripple_set_status.
     const runs = snapshot.runs || [];
 
     // Header presence
+    const onlineAgents = agents.filter(a => a.online && a.activityState !== 'offline' && a.activityState !== 'error' && a.activityState !== 'quota_exceeded');
     const presenceEl = document.getElementById('header-presence');
     if (presenceEl) {
       const downAgents = agents.filter(a => a.activityState === 'error' || a.activityState === 'quota_exceeded');
       const downSuffix = downAgents.length > 0 ? ` • ⚠️ ${downAgents.length} down (${downAgents.map(a => '@' + a.actorId).join(', ')})` : '';
-      presenceEl.textContent = `${human?.actorName || 'David'} • ${agents.length} AI agent${agents.length === 1 ? '' : 's'} connected${downSuffix}`;
+      presenceEl.textContent = `${human?.actorName || 'David'} • ${onlineAgents.length}/${agents.length} AI agent${agents.length === 1 ? '' : 's'} online${downSuffix}`;
     }
     const countEl = document.getElementById('sidebar-agent-count');
     if (countEl) {
-      countEl.textContent = `${agents.length} agents`;
+      countEl.textContent = `${onlineAgents.length}/${agents.length} online`;
     }
 
     // Sidebar Roster
